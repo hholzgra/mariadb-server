@@ -5328,3 +5328,18 @@ static Sys_var_ulong Sys_log_tc_size(
        DEFAULT(my_getpagesize() * 6),
        BLOCK_SIZE(my_getpagesize()));
 #endif
+
+#ifdef HAVE_MADV_DONTDUMP
+
+/* keep list in sync with constant definitiosn in my_stacktrace.h */
+static const char *core_nodump_names[] = { "MAX",
+					   "INNODB_POOL_BUFFER",
+					   "MYISAM_KEY_BUFFER",
+					   NULL};
+
+static Sys_var_set Sys_core_nodump(
+       "core_nodump", "Things to exclude from core dumps",
+       GLOBAL_VAR(opt_core_nodump), CMD_LINE(REQUIRED_ARG),
+       core_nodump_names, DEFAULT(0));
+
+#endif /* HAVE_MADV_DONTDUMP */
