@@ -152,8 +152,8 @@ MYSQLDUMP="$MYSQLDUMP $AUTH -S$WSREP_SST_OPT_SOCKET \
 # need to disable logging when loading the dump
 # reason is that dump contains ALTER TABLE for log tables, and
 # this causes an error if logging is enabled
-GENERAL_LOG_OPT=`$MYSQL --skip-column-names -e"$STOP_WSREP SELECT @@GENERAL_LOG"`
-SLOW_LOG_OPT=`$MYSQL --skip-column-names -e"$STOP_WSREP SELECT @@SLOW_QUERY_LOG"`
+GENERAL_LOG_OPT=$($MYSQL --skip-column-names -e"$STOP_WSREP SELECT @@GENERAL_LOG")
+SLOW_LOG_OPT=$($MYSQL --skip-column-names -e"$STOP_WSREP SELECT @@SLOW_QUERY_LOG")
 $MYSQL -e"$STOP_WSREP SET GLOBAL GENERAL_LOG=OFF"
 $MYSQL -e"$STOP_WSREP SET GLOBAL SLOW_QUERY_LOG=OFF"
 

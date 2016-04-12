@@ -144,7 +144,7 @@ get_transfer()
     fi
 
     if [[ $tfmt == 'nc' ]];then
-        if [[ ! -x `which nc` ]];then 
+        if [[ ! -x $(which nc) ]];then 
             wsrep_log_error "nc(netcat) not found in path: $PATH"
             exit 2
         fi
@@ -157,7 +157,7 @@ get_transfer()
     else
         tfmt='socat'
         wsrep_log_info "Using socat as streamer"
-        if [[ ! -x `which socat` ]];then 
+        if [[ ! -x $(which socat) ]];then 
             wsrep_log_error "socat not found in path: $PATH"
             exit 2
         fi
@@ -406,7 +406,7 @@ check_extra()
     fi
 }
 
-if [[ ! -x `which innobackupex` ]];then 
+if [[ ! -x $(which innobackupex) ]];then 
     wsrep_log_error "innobackupex not in path: $PATH"
     exit 2
 fi
@@ -640,7 +640,7 @@ then
 
             wsrep_log_info "Compressed qpress files found"
 
-            if [[ ! -x `which qpress` ]];then 
+            if [[ ! -x $(which qpress) ]];then 
                 wsrep_log_error "qpress not found in path: $PATH"
                 exit 22
             fi
