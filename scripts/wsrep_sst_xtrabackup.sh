@@ -21,7 +21,7 @@
 
 
 
-. $(dirname $0)/wsrep_sst_common
+. "$(dirname "$0")"/wsrep_sst_common
 
 ealgo=""
 ekey=""
@@ -100,7 +100,7 @@ get_keys()
     fi
 
     if [[ $encrypt -eq 0 ]];then 
-        if $MY_PRINT_DEFAULTS xtrabackup | grep -q encrypt;then
+        if "$MY_PRINT_DEFAULTS" xtrabackup | grep -q encrypt;then
             wsrep_log_error "Unexpected option combination. SST may fail. Refer to http://www.percona.com/doc/percona-xtradb-cluster/manual/xtrabackup_sst.html "
         fi
         return
@@ -195,18 +195,18 @@ parse_cnf()
 {
     local group=$1
     local var=$2
-    reval=$($MY_PRINT_DEFAULTS $group | awk -F= '{if ($1 ~ /_/) { gsub(/_/,"-",$1); print $1"="$2 } else { print $0 }}' | grep -- "--$var=" | cut -d= -f2-)
+    reval=$("$MY_PRINT_DEFAULTS" "$group" | awk -F= '{if ($1 ~ /_/) { gsub(/_/,"-",$1); print $1"="$2 } else { print $0 }}' | grep -- "--$var=" | cut -d= -f2-)
     if [[ -z $reval ]];then 
         [[ -n $3 ]] && reval=$3
     fi
-    echo $reval
+    echo "$reval"
 }
 
 get_footprint()
 {
-    pushd $WSREP_SST_OPT_DATA 1>/dev/null
+    pushd "$WSREP_SST_OPT_DATA" 1>/dev/null
     payload=$(find . -regex '.*\.ibd$\|.*\.MYI$\|.*\.MYD$\|.*ibdata1$' -type f -print0 | du --files0-from=- --block-size=1 -c | awk 'END { print $1 }')
-    if $MY_PRINT_DEFAULTS xtrabackup | grep -q -- "--compress";then 
+    if "$MY_PRINT_DEFAULTS" xtrabackup | grep -q -- "--compress";then 
         # QuickLZ has around 50% compression ratio
         # When compression/compaction used, the progress is only an approximate.
         payload=$(( payload*1/2 ))
@@ -307,16 +307,16 @@ cleanup_joiner()
         wsrep_log_info "Removing the sst_in_progress file"
         wsrep_cleanup_progress_file
     fi
-    if [[ -n $progress && -p $progress ]];then 
+    if [[ -n "$progress" && -p "$progress" ]];then 
         wsrep_log_info "Cleaning up fifo file $progress"
-        rm $progress
+        rm "$progress"
     fi
 }
 
 check_pid()
 {
     local pid_file="$1"
-    [ -r "$pid_file" ] && ps -p $(cat "$pid_file") >/dev/null 2>&1
+    [ -r "$pid_file" ] && ps -p "$(cat "$pid_file")" >/dev/null 2>&1
 }
 
 cleanup_donor()
@@ -327,38 +327,38 @@ cleanup_donor()
         wsrep_log_error "Cleanup after exit with status:$estatus"
     fi
 
-    if [[ -n $XTRABACKUP_PID ]];then 
-        if check_pid $XTRABACKUP_PID
+    if [[ -n "$XTRABACKUP_PID" ]];then 
+        if check_pid "$XTRABACKUP_PID"
         then
             wsrep_log_error "xtrabackup process is still running. Killing... "
             kill_xtrabackup
         fi
 
-        rm -f $XTRABACKUP_PID 
+        rm -f "$XTRABACKUP_PID" 
     fi
-    rm -f ${DATA}/${IST_FILE}
+    rm -f "${DATA}/${IST_FILE}"
 
-    if [[ -n $progress && -p $progress ]];then 
+    if [[ -n "$progress" && -p "$progress" ]];then 
         wsrep_log_info "Cleaning up fifo file $progress"
-        rm $progress
+        rm "$progress"
     fi
 }
 
 kill_xtrabackup()
 {
     local PID=$(cat $XTRABACKUP_PID)
-    [ -n "$PID" -a "0" != "$PID" ] && kill $PID && (kill $PID && kill -9 $PID) || :
+    [ -n "$PID" -a "0" != "$PID" ] && kill "$PID" && (kill "$PID" && kill -9 "$PID") || :
     rm -f "$XTRABACKUP_PID"
 }
 
 setup_ports()
 {
     if [[ "$WSREP_SST_OPT_ROLE"  == "donor" ]];then
-        SST_PORT=$(echo $WSREP_SST_OPT_ADDR | awk -F '[:/]' '{ print $2 }')
-        REMOTEIP=$(echo $WSREP_SST_OPT_ADDR | awk -F ':' '{ print $1 }')
-        lsn=$(echo $WSREP_SST_OPT_ADDR | awk -F '[:/]' '{ print $4 }')
+        SST_PORT=$(echo "$WSREP_SST_OPT_ADDR" | awk -F '[:/]' '{ print $2 }')
+        REMOTEIP=$(echo "$WSREP_SST_OPT_ADDR" | awk -F ':' '{ print $1 }')
+        lsn=$(echo "$WSREP_SST_OPT_ADDR" | awk -F '[:/]' '{ print $4 }')
     else
-        SST_PORT=$(echo ${WSREP_SST_OPT_ADDR} | awk -F ':' '{ print $2 }')
+        SST_PORT=$(echo "${WSREP_SST_OPT_ADDR}" | awk -F ':' '{ print $2 }')
     fi
 }
 
@@ -385,8 +385,8 @@ check_extra()
 {
     local use_socket=1
     if [[ $uextra -eq 1 ]];then 
-        if $MY_PRINT_DEFAULTS --mysqld | tr '_' '-' | grep -- "--thread-handling=" | grep -q 'pool-of-threads';then 
-            local eport=$($MY_PRINT_DEFAULTS --mysqld | tr '_' '-' | grep -- "--extra-port=" | cut -d= -f2)
+        if "$MY_PRINT_DEFAULTS" --mysqld | tr '_' '-' | grep -- "--thread-handling=" | grep -q 'pool-of-threads';then 
+            local eport=$("$MY_PRINT_DEFAULTS" --mysqld | tr '_' '-' | grep -- "--extra-port=" | cut -d= -f2)
             if [[ -n $eport ]];then 
                 # Xtrabackup works only locally.
                 # Hence, setting host to 127.0.0.1 unconditionally. 
@@ -431,7 +431,7 @@ if [ "$WSREP_SST_OPT_ROLE" = "donor" ]
 then
     trap cleanup_donor EXIT
 
-    if [ $WSREP_SST_OPT_BYPASS -eq 0 ]
+    if [ "$WSREP_SST_OPT_BYPASS" -eq 0 ]
     then
         TMPDIR="${TMPDIR:-/tmp}"
 
@@ -472,10 +472,10 @@ then
         fi
 
         set +e
-        timeit "Donor-Transfer" "$INNOBACKUP | $tcmd; RC=( "\${PIPESTATUS[@]}" )"
+        timeit "Donor-Transfer" "$INNOBACKUP | $tcmd; RC=( "\$\{PIPESTATUS[@]\}" )"
         set -e
 
-        if [ ${RC[0]} -ne 0 ]; then
+        if [ "${RC[0]}" -ne 0 ]; then
           wsrep_log_error "${INNOBACKUPEX_BIN} finished with error: ${RC[0]}. " \
                           "Check ${DATA}/innobackup.backup.log"
           exit 22
@@ -497,12 +497,12 @@ then
         echo "${WSREP_SST_OPT_GTID} ${WSREP_SST_OPT_GTID_DOMAIN_ID}" > "${MAGIC_FILE}"
         echo "1" > "${DATA}/${IST_FILE}"
         get_keys
-        pushd ${DATA} 1>/dev/null
+        pushd "${DATA}" 1>/dev/null
         set +e
         if [[ $encrypt -eq 1 ]];then
             tcmd=" $ecmd | $tcmd"
         fi
-        timeit "Donor-IST-Unencrypted-transfer" "$strmcmd | $tcmd; RC=( "\${PIPESTATUS[@]}" )"
+        timeit "Donor-IST-Unencrypted-transfer" "$strmcmd | $tcmd; RC=( "\$\{PIPESTATUS[@]\}" )"
         set -e
         popd 1>/dev/null
 
@@ -521,9 +521,9 @@ then
 elif [ "${WSREP_SST_OPT_ROLE}" = "joiner" ]
 then
     [[ -e $SST_PROGRESS_FILE ]] && wsrep_log_info "Stale sst_in_progress file: $SST_PROGRESS_FILE"
-    touch $SST_PROGRESS_FILE
+    touch "$SST_PROGRESS_FILE"
 
-    if [[ ! -e ${DATA}/ibdata1 ]];then 
+    if [[ ! -e "${DATA}"/ibdata1 ]];then 
         incremental=0
     fi
 
@@ -540,16 +540,16 @@ then
     MODULE="xtrabackup_sst"
 
     # May need xtrabackup_checkpoints later on
-    rm -f ${DATA}/xtrabackup_binary ${DATA}/xtrabackup_galera_info  ${DATA}/xtrabackup_logfile
+    rm -f "${DATA}/xtrabackup_binary" "${DATA}/xtrabackup_galera_info" "${DATA}/xtrabackup_logfile"
 
-    ADDR=${WSREP_SST_OPT_ADDR}
+    ADDR="${WSREP_SST_OPT_ADDR}"
     if [ -z "${SST_PORT}" ]
     then
         SST_PORT=4444
-        ADDR="$(echo ${WSREP_SST_OPT_ADDR} | awk -F ':' '{ print $1 }'):${SST_PORT}"
+        ADDR="$(echo "${WSREP_SST_OPT_ADDR}" | awk -F ':' '{ print $1 }'):${SST_PORT}"
     fi
 
-    wait_for_listen ${SST_PORT} ${ADDR} ${MODULE} &
+    wait_for_listen "${SST_PORT}" "${ADDR}" "${MODULE}" &
 
     trap sig_joiner_cleanup HUP PIPE INT TERM
     trap cleanup_joiner EXIT
@@ -571,8 +571,8 @@ then
         strmcmd=" $ecmd | $strmcmd"
     fi
 
-    pushd ${DATA} 1>/dev/null
-    timeit "Joiner-Recv-Unencrypted" "$tcmd | $strmcmd; RC=( "\${PIPESTATUS[@]}" )"
+    pushd "${DATA}" 1>/dev/null
+    timeit "Joiner-Recv-Unencrypted" "$tcmd | $strmcmd; RC=( "\$\{PIPESTATUS[@]\}" )"
     popd 1>/dev/null 
 
     set -e
@@ -602,11 +602,11 @@ then
         # this message should cause joiner to abort
         wsrep_log_error "xtrabackup process ended without creating '${MAGIC_FILE}'"
         wsrep_log_info "Contents of datadir" 
-        wsrep_log_info "$(ls -l ${DATA}/**/*)"
+        wsrep_log_info "$(ls -l "${DATA}"/**/*)"
         exit 32
     fi
 
-    if ! ps -p ${WSREP_SST_OPT_PARENT} &>/dev/null
+    if ! ps -p "${WSREP_SST_OPT_PARENT}" &>/dev/null
     then
         wsrep_log_error "Parent mysqld process (PID:${WSREP_SST_OPT_PARENT}) terminated unexpectedly." 
         exit 32
@@ -617,15 +617,15 @@ then
         wsrep_log_info "Proceeding with SST"
         wsrep_log_info "Removing existing ib_logfile files"
         if [[ $incremental -ne 1 ]];then 
-            rm -f ${DATA}/ib_logfile*
+            rm -f "${DATA}"/ib_logfile*
         else
-            rm -f ${BDATA}/ib_logfile*
+            rm -f "${BDATA}"/ib_logfile*
         fi
 
         get_proc
 
         # Rebuild indexes for compact backups
-        if grep -q 'compact = 1' ${DATA}/xtrabackup_checkpoints;then 
+        if grep -q 'compact = 1' "${DATA}/xtrabackup_checkpoints";then 
             wsrep_log_info "Index compaction detected"
             rebuild=1
         fi
@@ -636,7 +636,7 @@ then
             rebuildcmd="--rebuild-indexes --rebuild-threads=$nthreads"
         fi
 
-        if test -n "$(find ${DATA} -maxdepth 1 -type f -name '*.qp' -print -quit)";then
+        if test -n "$(find "${DATA}" -maxdepth 1 -type f -name '*.qp' -print -quit)";then
 
             wsrep_log_info "Compressed qpress files found"
 
@@ -646,7 +646,7 @@ then
             fi
 
             if [[ -n $progress ]] && pv --help | grep -q 'line-mode';then
-                count=$(find ${DATA} -type f -name '*.qp' | wc -l)
+                count=$(find "${DATA}" -type f -name '*.qp' | wc -l)
                 count=$(( count*2 ))
                 if pv --help | grep -q FORMAT;then 
                     pvopts="-f -s $count -l -N Decompression -F '%N => Rate:%r Elapsed:%t %e Progress: [%b/$count]'"
@@ -661,7 +661,7 @@ then
             fi
 
             wsrep_log_info "Removing existing ibdata1 file"
-            rm -f ${DATA}/ibdata1
+            rm -f "${DATA}/ibdata1"
 
             # Decompress the qpress files 
             wsrep_log_info "Decompression with $nproc threads"
@@ -670,7 +670,7 @@ then
 
             if [[ $extcode -eq 0 ]];then
                 wsrep_log_info "Removing qpress files after decompression"
-                find ${DATA} -type f -name '*.qp' -delete 
+                find "${DATA}" -type f -name '*.qp' -delete 
                 if [[ $? -ne 0 ]];then 
                     wsrep_log_error "Something went wrong with deletion of qpress files. Investigate"
                 fi
@@ -691,8 +691,8 @@ then
 
         if [[ $incremental -eq 1 ]];then 
             wsrep_log_info "Cleaning up ${DATA} after incremental SST"
-            [[ -d ${DATA} ]] && rm -rf ${DATA}
-            DATA=$BDATA
+            [[ -d "${DATA}" ]] && rm -rf "${DATA}"
+            DATA="$BDATA"
         fi
 
         if [ $? -ne 0 ];

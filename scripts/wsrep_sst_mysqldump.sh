@@ -21,7 +21,7 @@
 # to avoid shell's "parameter not set" message.
 WSREP_SST_OPT_CONF=""
 
-. $(dirname $0)/wsrep_sst_common
+. "$(dirname "$0")"/wsrep_sst_common
 PATH=$PATH:/usr/sbin:/usr/bin:/sbin:/bin
 
 EINVAL=22
@@ -48,7 +48,7 @@ if test -z "$WSREP_SST_OPT_LPORT"; then wsrep_log_error "LPORT cannot be nil"; e
 if test -z "$WSREP_SST_OPT_SOCKET";then wsrep_log_error "SOCKET cannot be nil";exit $EINVAL; fi
 if test -z "$WSREP_SST_OPT_GTID";  then wsrep_log_error "GTID cannot be nil";  exit $EINVAL; fi
 
-if local_ip $WSREP_SST_OPT_HOST && \
+if local_ip "$WSREP_SST_OPT_HOST" && \
    [ "$WSREP_SST_OPT_PORT" = "$WSREP_SST_OPT_LPORT" ]
 then
     wsrep_log_error \
@@ -57,20 +57,20 @@ then
 fi
 
 # Check client version
-if ! $MYSQL_CLIENT --version | grep 'Distrib 10.1' >/dev/null
+if ! "$MYSQL_CLIENT" --version | grep 'Distrib 10.1' >/dev/null
 then
-    $MYSQL_CLIENT --version >&2
+    "$MYSQL_CLIENT" --version >&2
     wsrep_log_error "this operation requires MySQL client version 10 or newer"
     exit $EINVAL
 fi
 
 # For Bug:1293798
 if [ -z "$WSREP_SST_OPT_PSWD" -a -n "$WSREP_SST_OPT_AUTH" ]; then
-    WSREP_SST_OPT_USER=$(echo $WSREP_SST_OPT_AUTH | cut -d: -f1)
-    WSREP_SST_OPT_PSWD=$(echo $WSREP_SST_OPT_AUTH | cut -d: -f2)
+    WSREP_SST_OPT_USER=$(echo "$WSREP_SST_OPT_AUTH" | cut -d: -f1)
+    WSREP_SST_OPT_PSWD=$(echo "$WSREP_SST_OPT_AUTH" | cut -d: -f2)
 fi
-AUTH="-u$WSREP_SST_OPT_USER"
-if test -n "$WSREP_SST_OPT_PSWD"; then AUTH="$AUTH -p$WSREP_SST_OPT_PSWD"; fi
+AUTH_OPTS="-u$WSREP_SST_OPT_USER"
+if test -n "$WSREP_SST_OPT_PSWD"; then AUTH_OPTS="$AUTH_OPTS -p$WSREP_SST_OPT_PSWD"; fi
 
 STOP_WSREP="SET wsrep_on=OFF;"
 
@@ -97,7 +97,7 @@ DROP PREPARE stmt;"
 SET_START_POSITION="SET GLOBAL wsrep_start_position='$WSREP_SST_OPT_GTID';"
 
 SET_WSREP_GTID_DOMAIN_ID=""
-if [ -n $WSREP_SST_OPT_GTID_DOMAIN_ID ]
+if [ -n "$WSREP_SST_OPT_GTID_DOMAIN_ID" ]
 then
   SET_WSREP_GTID_DOMAIN_ID="
   SET @val = (SELECT GLOBAL_VALUE FROM INFORMATION_SCHEMA.SYSTEM_VARIABLES WHERE VARIABLE_NAME = 'WSREP_GTID_STRICT_MODE' AND GLOBAL_VALUE > 0);
@@ -109,19 +109,19 @@ fi
 
 # Retrieve the donor's @@global.gtid_binlog_state.
 GTID_BINLOG_STATE=$(echo "SHOW GLOBAL VARIABLES LIKE 'gtid_binlog_state'" |\
-$MYSQL_CLIENT $AUTH -S$WSREP_SST_OPT_SOCKET --disable-reconnect --connect_timeout=10 |\
+"$MYSQL_CLIENT" $AUTH_OPTS -S"$WSREP_SST_OPT_SOCKET" --disable-reconnect --connect_timeout=10 |\
 tail -1 | awk -F ' ' '{ print $2 }')
 
-MYSQL="$MYSQL_CLIENT $AUTH -h$WSREP_SST_OPT_HOST -P$WSREP_SST_OPT_PORT "\
-"--disable-reconnect --connect_timeout=10"
+MYSQL_CLIENT_OPTS="$AUTH_OPTS -h$WSREP_SST_OPT_HOST -P$WSREP_SST_OPT_PORT "
+MYSQL_CLIENT_OPTS="$MYSQL_CLIENT_OPTS --disable-reconnect --connect_timeout=10"
 
 # Check if binary logging is enabled on the joiner node.
 # Note: SELECT cannot be used at this point.
-LOG_BIN=$(echo "SHOW VARIABLES LIKE 'log_bin'" | $MYSQL |\
+LOG_BIN=$(echo "SHOW VARIABLES LIKE 'log_bin'" | "$MYSQL_CLIENT" $MYSQL_CLIENT_OPTS |\
 tail -1 | awk -F ' ' '{ print $2 }')
 
 # Check the joiner node's server version.
-SERVER_VERSION=$(echo "SHOW VARIABLES LIKE 'version'" | $MYSQL |\
+SERVER_VERSION=$(echo "SHOW VARIABLES LIKE 'version'" | "$MYSQL_CLIENT" $MYSQL_CLIENT_OPTS |\
 tail -1 | awk -F ' ' '{ print $2 }')
 
 RESET_MASTER=""
@@ -129,7 +129,7 @@ SET_GTID_BINLOG_STATE=""
 SQL_LOG_BIN_OFF=""
 
 # Safety check
-if echo $SERVER_VERSION | grep '^10.1' > /dev/null
+if echo "$SERVER_VERSION" | grep '^10.1' > /dev/null
 then
   # If binary logging is enabled on the joiner node, we need to copy donor's
   # gtid_binlog_state to joiner. In order to do that, a RESET MASTER must be
@@ -144,7 +144,7 @@ then
 fi
 
 # NOTE: we don't use --routines here because we're dumping mysql.proc table
-MYSQLDUMP="$MYSQLDUMP $AUTH -S$WSREP_SST_OPT_SOCKET \
+MYSQLDUMP_OPTS="$AUTH_OPTS -S$WSREP_SST_OPT_SOCKET \
 --add-drop-database --add-drop-table --skip-add-locks --create-options \
 --disable-keys --extended-insert --skip-lock-tables --quick --set-charset \
 --skip-comments --flush-privileges --all-databases"
@@ -152,27 +152,27 @@ MYSQLDUMP="$MYSQLDUMP $AUTH -S$WSREP_SST_OPT_SOCKET \
 # need to disable logging when loading the dump
 # reason is that dump contains ALTER TABLE for log tables, and
 # this causes an error if logging is enabled
-GENERAL_LOG_OPT=$($MYSQL --skip-column-names -e"$STOP_WSREP SELECT @@GENERAL_LOG")
-SLOW_LOG_OPT=$($MYSQL --skip-column-names -e"$STOP_WSREP SELECT @@SLOW_QUERY_LOG")
-$MYSQL -e"$STOP_WSREP SET GLOBAL GENERAL_LOG=OFF"
-$MYSQL -e"$STOP_WSREP SET GLOBAL SLOW_QUERY_LOG=OFF"
+GENERAL_LOG_OPT=$("$MYSQL_CLIENT" $MYSQL_CLIENT_OPTS --skip-column-names -e"$STOP_WSREP SELECT @@GENERAL_LOG")
+SLOW_LOG_OPT=$("$MYSQL_CLIENT" $MYSQL_CLIENT_OPTS --skip-column-names -e"$STOP_WSREP SELECT @@SLOW_QUERY_LOG")
+"$MYSQL_CLIENT" $MYSQL_CLIENT_OPTS -e"$STOP_WSREP SET GLOBAL GENERAL_LOG=OFF"
+"$MYSQL_CLIENT" $MYSQL_CLIENT_OPTS -e"$STOP_WSREP SET GLOBAL SLOW_QUERY_LOG=OFF"
 
 # commands to restore log settings
 RESTORE_GENERAL_LOG="SET GLOBAL GENERAL_LOG=$GENERAL_LOG_OPT;"
 RESTORE_SLOW_QUERY_LOG="SET GLOBAL SLOW_QUERY_LOG=$SLOW_LOG_OPT;"
 
 
-if [ $WSREP_SST_OPT_BYPASS -eq 0 ]
+if [ "$WSREP_SST_OPT_BYPASS" -eq 0 ]
 then
-    (echo $STOP_WSREP && echo $RESET_MASTER && \
-     echo $SET_GTID_BINLOG_STATE && echo $SQL_LOG_BIN_OFF && \
-     echo $STOP_WSREP && $MYSQLDUMP && echo $CSV_TABLES_FIX && \
-     echo $RESTORE_GENERAL_LOG && echo $RESTORE_SLOW_QUERY_LOG && \
-     echo $SET_START_POSITION && echo $SET_WSREP_GTID_DOMAIN_ID \
-     || echo "SST failed to complete;") | $MYSQL
+    (echo "$STOP_WSREP" && echo "$RESET_MASTER" && \
+     echo "$SET_GTID_BINLOG_STATE" && echo "$SQL_LOG_BIN_OFF" && \
+     echo "$STOP_WSREP" && "$MYSQLDUMP" $MYSQLDUMP_OPTS && echo "$CSV_TABLES_FIX" && \
+     echo "$RESTORE_GENERAL_LOG" && echo "$RESTORE_SLOW_QUERY_LOG" && \
+     echo "$SET_START_POSITION" && echo "$SET_WSREP_GTID_DOMAIN_ID" \
+     || echo "SST failed to complete;") | "$MYSQL_CLIENT" $MYSQL_CLIENT_OPTS
 else
     wsrep_log_info "Bypassing state dump."
-    echo $SET_START_POSITION | $MYSQL
+    echo "$SET_START_POSITION" | "$MYSQL_CLIENT" $MYSQL_CLIENT_OPTS
 fi
 
 #

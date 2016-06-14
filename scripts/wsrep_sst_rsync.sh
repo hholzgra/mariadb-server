@@ -26,7 +26,7 @@ OS=$(uname)
 # Setting the path for lsof on CentOS
 export PATH="/usr/sbin:/sbin:$PATH"
 
-. $(dirname $0)/wsrep_sst_common
+. "$(dirname "$0")"/wsrep_sst_common
 
 wsrep_check_programs rsync
 
@@ -34,7 +34,7 @@ cleanup_joiner()
 {
     wsrep_log_info "Joiner cleanup."
     local PID=$(cat "$RSYNC_PID" 2>/dev/null || echo 0)
-    [ "0" != "$PID" ] && kill $PID && sleep 0.5 && kill -9 $PID >/dev/null 2>&1 \
+    [ "0" != "$PID" ] && kill "$PID" && sleep 0.5 && kill -9 "$PID" >/dev/null 2>&1 \
     || :
     rm -rf "$RSYNC_CONF"
     rm -rf "$MAGIC_FILE"
@@ -48,7 +48,7 @@ cleanup_joiner()
 check_pid()
 {
     local pid_file=$1
-    [ -r "$pid_file" ] && ps -p $(cat $pid_file) >/dev/null 2>&1
+    [ -r "$pid_file" ] && ps -p "$(cat "$pid_file")" >/dev/null 2>&1
 }
 
 check_pid_and_port()
@@ -62,18 +62,18 @@ check_pid_and_port()
       exit 2 # ENOENT
     fi
 
-    local port_info=$(lsof -i :$rsync_port -Pn 2>/dev/null | \
+    local port_info=$(lsof -i :"$rsync_port" -Pn 2>/dev/null | \
         grep "(LISTEN)")
-    local is_rsync=$(echo $port_info | \
+    local is_rsync=$(echo "$port_info" | \
         grep -w '^rsync[[:space:]]\+'"$rsync_pid" 2>/dev/null)
 
     if [ -n "$port_info" -a -z "$is_rsync" ]; then
         wsrep_log_error "rsync daemon port '$rsync_port' has been taken"
         exit 16 # EBUSY
     fi
-    check_pid $pid_file && \
+    check_pid "$pid_file" && \
         [ -n "$port_info" ] && [ -n "$is_rsync" ] && \
-        [ $(cat $pid_file) -eq $rsync_pid ]
+        [ "$(cat "$pid_file")" -eq "$rsync_pid" ]
 }
 
 MAGIC_FILE="$WSREP_SST_OPT_DATA/rsync_sst_complete"
@@ -83,26 +83,26 @@ BINLOG_TAR_FILE="$WSREP_SST_OPT_DATA/wsrep_sst_binlog.tar"
 BINLOG_N_FILES=1
 rm -f "$BINLOG_TAR_FILE" || :
 
-if ! [ -z $WSREP_SST_OPT_BINLOG ]
+if ! [ -z "$WSREP_SST_OPT_BINLOG" ]
 then
-    BINLOG_DIRNAME=$(dirname $WSREP_SST_OPT_BINLOG)
-    BINLOG_FILENAME=$(basename $WSREP_SST_OPT_BINLOG)
+    BINLOG_DIRNAME=$(dirname "$WSREP_SST_OPT_BINLOG")
+    BINLOG_FILENAME=$(basename "$WSREP_SST_OPT_BINLOG")
 fi
 
 WSREP_LOG_DIR=${WSREP_LOG_DIR:-""}
 # if WSREP_LOG_DIR env. variable is not set, try to get it from my.cnf
 if [ -z "$WSREP_LOG_DIR" ]; then
-    WSREP_LOG_DIR=$($MY_PRINT_DEFAULTS --mysqld \
+    WSREP_LOG_DIR=$("$MY_PRINT_DEFAULTS" --mysqld \
                     | grep -- '--innodb[-_]log[-_]group[-_]home[-_]dir=' \
                     | cut -b 29- )
 fi
 
 if [ -n "$WSREP_LOG_DIR" ]; then
     # handle both relative and absolute paths
-    WSREP_LOG_DIR=$(cd $WSREP_SST_OPT_DATA; mkdir -p "$WSREP_LOG_DIR"; cd $WSREP_LOG_DIR; pwd -P)
+    WSREP_LOG_DIR=$(cd "$WSREP_SST_OPT_DATA"; mkdir -p "$WSREP_LOG_DIR"; cd "$WSREP_LOG_DIR"; pwd -P)
 else
     # default to datadir
-    WSREP_LOG_DIR=$(cd $WSREP_SST_OPT_DATA; pwd -P)
+    WSREP_LOG_DIR=$(cd "$WSREP_SST_OPT_DATA"; pwd -P)
 fi
 
 # Old filter - include everything except selected
@@ -118,14 +118,14 @@ FILTER=(-f '- /lost+found' -f '- /.fseventsd' -f '- /.Trashes'
 if [ "$WSREP_SST_OPT_ROLE" = "donor" ]
 then
 
-    if [ $WSREP_SST_OPT_BYPASS -eq 0 ]
+    if [ "$WSREP_SST_OPT_BYPASS" -eq 0 ]
     then
 
         FLUSHED="$WSREP_SST_OPT_DATA/tables_flushed"
         rm -rf "$FLUSHED"
 
         # Use deltaxfer only for WAN
-        inv=$(basename $0)
+        inv=$(basename "$0")
         [ "$inv" = "wsrep_sst_rsync_wan" ] && WHOLE_FILE_OPT="" \
                                            || WHOLE_FILE_OPT="--whole-file"
 
@@ -139,25 +139,25 @@ then
             sleep 0.2
         done
 
-        STATE="$(cat $FLUSHED)"
+        STATE="$(cat "$FLUSHED")"
         rm -rf "$FLUSHED"
 
         sync
 
-        if ! [ -z $WSREP_SST_OPT_BINLOG ]
+        if ! [ -z "$WSREP_SST_OPT_BINLOG" ]
         then
             # Prepare binlog files
-            pushd $BINLOG_DIRNAME &> /dev/null
-            binlog_files_full=$(tail -n $BINLOG_N_FILES ${BINLOG_FILENAME}.index)
+            pushd "$BINLOG_DIRNAME" &> /dev/null
+            binlog_files_full=$(tail -n "$BINLOG_N_FILES" "${BINLOG_FILENAME}".index)
             binlog_files=""
             for ii in $binlog_files_full
             do
-                binlog_files="$binlog_files $(basename $ii)"
+                binlog_files="$binlog_files $(basename "$ii")"
             done
             if ! [ -z "$binlog_files" ]
             then
                 wsrep_log_info "Preparing binlog files for transfer:"
-                tar -cvf $BINLOG_TAR_FILE $binlog_files >&2
+                tar -cvf "$BINLOG_TAR_FILE" $binlog_files >&2
             fi
             popd &> /dev/null
         fi
@@ -167,7 +167,7 @@ then
         rsync --owner --group --perms --links --specials \
               --ignore-times --inplace --dirs --delete --quiet \
               $WHOLE_FILE_OPT "${FILTER[@]}" "$WSREP_SST_OPT_DATA/" \
-              rsync://$WSREP_SST_OPT_ADDR >&2 || RC=$?
+              rsync://"$WSREP_SST_OPT_ADDR" >&2 || RC=$?
 
         if [ "$RC" -ne 0 ]; then
             wsrep_log_error "rsync returned code $RC:"
@@ -190,7 +190,7 @@ then
         rsync --owner --group --perms --links --specials \
               --ignore-times --inplace --dirs --delete --quiet \
               $WHOLE_FILE_OPT -f '+ /ib_logfile[0-9]*' -f '- **' "$WSREP_LOG_DIR/" \
-              rsync://$WSREP_SST_OPT_ADDR-log_dir >&2 || RC=$?
+              rsync://"$WSREP_SST_OPT_ADDR-log_dir" >&2 || RC=$?
 
         if [ $RC -ne 0 ]; then
             wsrep_log_error "rsync innodb_log_group_home_dir returned code $RC:"
@@ -204,11 +204,11 @@ then
         [ "$OS" == "Linux" ] && count=$(grep -c processor /proc/cpuinfo)
         [ "$OS" == "Darwin" -o "$OS" == "FreeBSD" ] && count=$(sysctl -n hw.ncpu)
 
-        find . -maxdepth 1 -mindepth 1 -type d -print0 | xargs -I{} -0 -P $count \
+        find . -maxdepth 1 -mindepth 1 -type d -print0 | xargs -I{} -0 -P "$count" \
              rsync --owner --group --perms --links --specials \
              --ignore-times --inplace --recursive --delete --quiet \
              $WHOLE_FILE_OPT --exclude '*/ib_logfile*' "$WSREP_SST_OPT_DATA"/{}/ \
-             rsync://$WSREP_SST_OPT_ADDR/{} >&2 || RC=$?
+             rsync://"$WSREP_SST_OPT_ADDR"/{} >&2 || RC=$?
 
         popd >/dev/null
 
@@ -228,7 +228,7 @@ then
     echo "continue" # now server can resume updating data
 
     echo "$STATE" > "$MAGIC_FILE"
-    rsync --archive --quiet --checksum "$MAGIC_FILE" rsync://$WSREP_SST_OPT_ADDR
+    rsync --archive --quiet --checksum "$MAGIC_FILE" rsync://"$WSREP_SST_OPT_ADDR"
 
     echo "done $STATE"
 
@@ -236,26 +236,26 @@ elif [ "$WSREP_SST_OPT_ROLE" = "joiner" ]
 then
     wsrep_check_programs lsof
 
-    touch $SST_PROGRESS_FILE
+    touch "$SST_PROGRESS_FILE"
     MYSQLD_PID=$WSREP_SST_OPT_PARENT
 
     MODULE="rsync_sst"
 
     RSYNC_PID="$WSREP_SST_OPT_DATA/$MODULE.pid"
 
-    if check_pid $RSYNC_PID
+    if check_pid "$RSYNC_PID"
     then
         wsrep_log_error "rsync daemon already running."
         exit 114 # EALREADY
     fi
     rm -rf "$RSYNC_PID"
 
-    ADDR=$WSREP_SST_OPT_ADDR
-    RSYNC_PORT=$(echo $ADDR | awk -F ':' '{ print $2 }')
+    ADDR="$WSREP_SST_OPT_ADDR"
+    RSYNC_PORT=$(echo "$ADDR" | awk -F ':' '{ print $2 }')
     if [ -z "$RSYNC_PORT" ]
     then
         RSYNC_PORT=4444
-        ADDR="$(echo $ADDR | awk -F ':' '{ print $1 }'):$RSYNC_PORT"
+        ADDR="$(echo "$ADDR" | awk -F ':' '{ print $1 }'):$RSYNC_PORT"
     fi
 
     trap "exit 32" HUP PIPE
@@ -288,7 +288,7 @@ EOF
     rsync --daemon --no-detach --port $RSYNC_PORT --config "$RSYNC_CONF" &
     RSYNC_REAL_PID=$!
 
-    until check_pid_and_port $RSYNC_PID $RSYNC_REAL_PID $RSYNC_PORT
+    until check_pid_and_port "$RSYNC_PID" "$RSYNC_REAL_PID" "$RSYNC_PORT"
     do
         sleep 0.2
     done
@@ -297,31 +297,31 @@ EOF
 
     # wait for SST to complete by monitoring magic file
     while [ ! -r "$MAGIC_FILE" ] && check_pid "$RSYNC_PID" && \
-          ps -p $MYSQLD_PID >/dev/null
+          ps -p "$MYSQLD_PID" >/dev/null
     do
         sleep 1
     done
 
-    if ! ps -p $MYSQLD_PID >/dev/null
+    if ! ps -p "$MYSQLD_PID" >/dev/null
     then
         wsrep_log_error \
         "Parent mysqld process (PID:$MYSQLD_PID) terminated unexpectedly."
         exit 32
     fi
 
-    if ! [ -z $WSREP_SST_OPT_BINLOG ]
+    if ! [ -z "$WSREP_SST_OPT_BINLOG" ]
     then
 
-        pushd $BINLOG_DIRNAME &> /dev/null
-        if [ -f $BINLOG_TAR_FILE ]
+        pushd "$BINLOG_DIRNAME" &> /dev/null
+        if [ -f "$BINLOG_TAR_FILE" ]
         then
             # Clean up old binlog files first
-            rm -f ${BINLOG_FILENAME}.*
+            rm -f "${BINLOG_FILENAME}".*
             wsrep_log_info "Extracting binlog files:"
-            tar -xvf $BINLOG_TAR_FILE >&2
-            for ii in $(ls -1 ${BINLOG_FILENAME}.*)
+            tar -xvf "$BINLOG_TAR_FILE" >&2
+            for ii in $(ls -1 "${BINLOG_FILENAME}".*)
             do
-                echo ${BINLOG_DIRNAME}/${ii} >> ${BINLOG_FILENAME}.index
+                echo "${BINLOG_DIRNAME}/${ii}" >> "${BINLOG_FILENAME}.index"
             done
         fi
         popd &> /dev/null
@@ -341,6 +341,6 @@ else
     exit 22 # EINVAL
 fi
 
-rm -f $BINLOG_TAR_FILE || :
+rm -f "$BINLOG_TAR_FILE" || :
 
 exit 0
