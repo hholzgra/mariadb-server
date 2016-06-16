@@ -4259,15 +4259,17 @@ err:
   // print the current replication position
   if (mi->using_gtid == Master_info::USE_GTID_NO)
     sql_print_information("Slave I/O thread exiting, read up to log '%s', "
-                          "position %llu", IO_RPL_LOG_NAME, mi->master_log_pos);
+                          "position %llu, master %s:%d", IO_RPL_LOG_NAME, mi->master_log_pos,
+                          mi->master_host, mi->master_port);
   else
   {
     StringBuffer<100> tmp;
     mi->gtid_current_pos.to_string(&tmp);
     sql_print_information("Slave I/O thread exiting, read up to log '%s', "
-                          "position %llu; GTID position %s",
+                          "position %llu; GTID position %s, master: %s:%d",
                           IO_RPL_LOG_NAME, mi->master_log_pos,
-                          tmp.c_ptr_safe());
+                          tmp.c_ptr_safe(),
+                          mi->master_host, mi->master_port);
   }
   RUN_HOOK(binlog_relay_io, thread_stop, (thd, mi));
   thd->reset_query();
