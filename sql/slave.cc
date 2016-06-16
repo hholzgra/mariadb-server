@@ -4260,7 +4260,7 @@ err:
   if (mi->using_gtid == Master_info::USE_GTID_NO)
     sql_print_information("Slave I/O thread exiting, read up to log '%s', "
                           "position %llu, master %s:%d", IO_RPL_LOG_NAME, mi->master_log_pos,
-                          mi->master_host, mi->master_port);
+                          mi->host, mi->port);
   else
   {
     StringBuffer<100> tmp;
@@ -4269,7 +4269,7 @@ err:
                           "position %llu; GTID position %s, master: %s:%d",
                           IO_RPL_LOG_NAME, mi->master_log_pos,
                           tmp.c_ptr_safe(),
-                          mi->master_host, mi->master_port);
+                          mi->host, mi->port);
   }
   RUN_HOOK(binlog_relay_io, thread_stop, (thd, mi));
   thd->reset_query();
@@ -4739,7 +4739,6 @@ pthread_handler_t handle_slave_sql(void *arg)
   mysql_mutex_unlock(&rli->data_lock);
 
   /* Read queries from the IO/THREAD until this thread is killed */
-
   while (!sql_slave_killed(serial_rgi))
   {
     THD_STAGE_INFO(thd, stage_reading_event_from_the_relay_log);
@@ -4788,28 +4787,16 @@ pthread_handler_t handle_slave_sql(void *arg)
         if (WSREP_ON && rli->last_error().number == ER_UNKNOWN_COM_ERROR)
           wsrep_node_dropped= TRUE;
       }
+
       goto err;
     }
   }
-
+  
   if (mi->using_parallel())
     rli->parallel.wait_for_done(thd, rli);
 
-  /* Thread stopped. Print the current replication position to the log */
-  {
-    StringBuffer<100> tmp;
-    if (mi->using_gtid != Master_info::USE_GTID_NO)
-    {
-      tmp.append(STRING_WITH_LEN("; GTID position '"));
-      rpl_append_gtid_state(&tmp, false);
-      tmp.append(STRING_WITH_LEN("'"));
-    }
-    sql_print_information("Slave SQL thread exiting, replication stopped in "
-                          "log '%s' at position %llu%s", RPL_LOG_NAME,
-                          rli->group_master_log_pos, tmp.c_ptr_safe());
-  }
-
  err:
+      sql_print_information("slave thread err");
 
   /*
     Once again, in case we aborted with an error and skipped the first one.
@@ -4880,6 +4867,22 @@ pthread_handler_t handle_slave_sql(void *arg)
       }
     }
   }
+
+  /* Thread stopped. Print the current replication position to the log */
+  {
+    StringBuffer<100> tmp;
+    if (mi->using_gtid != Master_info::USE_GTID_NO)
+    {
+      tmp.append(STRING_WITH_LEN("; GTID position '"));
+      rpl_append_gtid_state(&tmp, false);
+      tmp.append(STRING_WITH_LEN("'"));
+    }
+    sql_print_information("Slave SQL thread exiting, replication stopped in "
+                          "log '%s' at position %llu%s, master: %s:%d", RPL_LOG_NAME,
+                          rli->group_master_log_pos, tmp.c_ptr_safe(),
+			  mi->host, mi->port);
+  }
+
   THD_STAGE_INFO(thd, stage_waiting_for_slave_mutex_on_exit);
   thd->add_status_to_global();
   mysql_mutex_lock(&rli->run_lock);
