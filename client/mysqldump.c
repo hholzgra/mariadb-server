@@ -3889,7 +3889,8 @@ static void dump_table(char *table, char *db)
                   dynstr_append_checked(&extended_row, "NULL");
                 else
                 {
-                  if (field->type == MYSQL_TYPE_DECIMAL)
+                  if ((field->type == MYSQL_TYPE_DECIMAL) ||
+                      ((field->type == MYSQL_TYPE_FLOAT) || (field->type == MYSQL_TYPE_DOUBLE) && !strcmp(ptr, "-0")))
                   {
                     /* add " signs around */
                     dynstr_append_checked(&extended_row, "'");
