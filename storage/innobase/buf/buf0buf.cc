@@ -2138,6 +2138,13 @@ buf_pool_free(
 {
 	for (ulint i = 0; i < n_instances; i++) {
 		buf_pool_free_instance(buf_pool_from_array(i));
+
+                // In the event of a shutdown, leave the loop prematurely,
+                // to speed up the shutdown time.
+                if (srv_shutdown_state != SRV_SHUTDOWN_NONE)
+                {
+                        break;
+                }
 	}
 
 	UT_DELETE(buf_chunk_map_reg);

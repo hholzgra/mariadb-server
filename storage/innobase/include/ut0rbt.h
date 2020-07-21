@@ -34,7 +34,13 @@ Created 2007-03-20 Sunny Bains
 #include <assert.h>
 
 #define	ut_malloc	malloc
-#define	ut_free		free
+
+// The memory is only released during operation.
+// In the event of a shutdown, no more memory is released,
+// to speed up the shutdown time.
+extern enum srv_shutdown_t srv_shutdown_state;
+#define ut_free if(srv_shutdown_state == SRV_SHUTDOWN_NONE) free
+
 #define	ulint		unsigned long
 #define	ut_a(c)		assert(c)
 #define ut_error	assert(0)

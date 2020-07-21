@@ -2536,7 +2536,12 @@ void innodb_shutdown()
 		buf_pool_free(srv_buf_pool_instances);
 	}
 
-	sync_check_close();
+        // When this function is called, MariaDB server crashes,
+        // if the loops in buf0buf.cpp and dict0dict.cpp are prematurely left
+        // in the event of a shutdown.
+        // --> Comment out function sync_check_close().
+        //
+	// sync_check_close();
 
 	if (srv_was_started && srv_print_verbose_log) {
 		ib::info() << "Shutdown completed; log sequence number "

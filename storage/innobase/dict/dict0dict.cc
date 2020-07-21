@@ -1141,6 +1141,13 @@ dict_make_room_in_cache(
 			++n_evicted;
 		}
 
+                // In the event of a shutdown, leave the loop prematurely,
+                // to speed up the shutdown time.
+                if(srv_shutdown_state != SRV_SHUTDOWN_NONE)
+                {
+                        break;
+                }
+
 		table = prev_table;
 	}
 
@@ -5891,6 +5898,11 @@ void dict_sys_t::close()
       dict_table_t* prev_table = table;
       table = static_cast<dict_table_t*>(HASH_GET_NEXT(name_hash, prev_table));
       dict_sys.remove(prev_table);
+    }
+
+    if(srv_shutdown_state != SRV_SHUTDOWN_NONE)
+    {
+      break;
     }
   }
 
