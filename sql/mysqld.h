@@ -775,7 +775,7 @@ extern mysql_cond_t COND_manager;
 
 extern my_bool opt_use_ssl;
 extern char *opt_ssl_ca, *opt_ssl_capath, *opt_ssl_cert, *opt_ssl_cipher,
-  *opt_ssl_key, *opt_ssl_crl, *opt_ssl_crlpath;
+  *opt_ssl_key, *opt_ssl_crl, *opt_ssl_crlpath, *opt_ssl_passphrase_cmd;
 extern ulonglong tls_version;
 
 #ifdef MYSQL_SERVER
@@ -831,6 +831,7 @@ enum options_mysqld
   OPT_SSL_CRL,
   OPT_SSL_CRLPATH,
   OPT_SSL_KEY,
+  OPT_SSL_PASSPHRASE_CMD,
   OPT_THREAD_CONCURRENCY,
   OPT_WANT_CORE,
 #ifdef WITH_WSREP

@@ -221,13 +221,56 @@ static long vio_tls_protocol_options(ulonglong tls_version)
   return (disabled_tls_protocols | disabled_ssl_protocols);
 }
 
+static int
+ssl_external_passwd_cb(char *buf, int size, int rwflag, void *userdata)
+{
+  FILE *fp;
+  int len= 0, rc;
+
+  *buf= '\0';
+
+  fp= popen(userdata, "r");
+  if (!fp) {
+    bzero(buf, size);
+    fprintf(stderr, "Error executing passphrase command '%s' (%d)\n", (char *)userdata, errno);
+    return 0;
+  }
+
+  if (!fgets(buf, size, fp)) {
+    bzero(buf, size);
+    fprintf(stderr, "Error reading from passphrase command '%s' output (%d)\n", (char *)userdata, errno);
+    return 0;
+  }
+
+  rc= pclose(fp);
+  if (-1 == rc) {
+    bzero(buf, size);
+    fprintf(stderr, "Error closing passphrase command '%s' (%d)\n", (char *)userdata, errno);
+    return 0;
+  } else if (0 < rc) {
+    bzero(buf, size);
+    fprintf(stderr, "Error returned from passphrase command '%s' (%d)\n", (char *)userdata, WEXITSTATUS(rc));
+    return 0;
+  }
+
+  len = strlen(buf);
+
+  while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) {
+    buf[--len]= '\0';
+  }
+
+  return len;
+}
+
+
 /************************ VioSSLFd **********************************/
 static struct st_VioSSLFd *
 new_VioSSLFd(const char *key_file, const char *cert_file,
              const char *ca_file, const char *ca_path,
              const char *cipher, my_bool is_client_method,
              enum enum_ssl_init_error *error,
-             const char *crl_file, const char *crl_path, ulonglong tls_version)
+             const char *crl_file, const char *crl_path, ulonglong tls_version,
+             char *passphrase)
 {
   struct st_VioSSLFd *ssl_fd;
   long ssl_ctx_options;
@@ -281,6 +324,11 @@ new_VioSSLFd(const char *key_file, const char *cert_file,
     *error= SSL_INITERR_MEMFAIL;
     DBUG_PRINT("error", ("%s", sslGetErrString(*error)));
     goto err1;
+  }
+
+  if (passphrase) {
+    SSL_CTX_set_default_passwd_cb_userdata(ssl_fd->ssl_context, passphrase);
+    SSL_CTX_set_default_passwd_cb(ssl_fd->ssl_context, ssl_external_passwd_cb);
   }
 
   ssl_ctx_options= vio_tls_protocol_options(tls_version);
@@ -443,7 +491,7 @@ new_VioSSLConnectorFd(const char *key_file, const char *cert_file,
 
   if (!(ssl_fd= new_VioSSLFd(key_file, cert_file, ca_file,
                              ca_path, cipher, TRUE, error,
-                             crl_file, crl_path, 0)))
+                             crl_file, crl_path, 0, NULL)))
   {
     return 0;
   }
@@ -462,7 +510,7 @@ new_VioSSLAcceptorFd(const char *key_file, const char *cert_file,
 		     const char *ca_file, const char *ca_path,
 		     const char *cipher, enum enum_ssl_init_error* error,
                      const char *crl_file, const char *crl_path,
-                     ulonglong tls_version)
+                     ulonglong tls_version, char *passphrase)
 {
   struct st_VioSSLFd *ssl_fd;
   int verify= SSL_VERIFY_PEER | SSL_VERIFY_CLIENT_ONCE;
@@ -493,7 +541,7 @@ new_VioSSLAcceptorFd(const char *key_file, const char *cert_file,
 
   if (!(ssl_fd= new_VioSSLFd(key_file, cert_file, ca_file,
                              ca_path, cipher, FALSE, error,
-                             crl_file, crl_path, tls_version)))
+                             crl_file, crl_path, tls_version, passphrase)))
   {
     return 0;
   }

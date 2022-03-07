@@ -24,6 +24,7 @@
     case OPT_SSL_CIPHER:
     case OPT_SSL_CRL:
     case OPT_SSL_CRLPATH:
+    case OPT_SSL_PASSPHRASE_CMD:
     /*
       Enable use of SSL if we are using any ssl option
       One can disable SSL later by using --skip-ssl or --ssl=0
