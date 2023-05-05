@@ -399,11 +399,14 @@ bool handle_select(THD *thd, LEX *lex, select_result *result,
       If LIMIT ROWS EXAMINED interrupted query execution, issue a warning,
       continue with normal processing and produce an incomplete query result.
     */
+    bool saved_abort_on_warning= thd->abort_on_warning;
+    thd->abort_on_warning= false;
     push_warning_printf(thd, Sql_condition::WARN_LEVEL_WARN,
                         ER_QUERY_EXCEEDED_ROWS_EXAMINED_LIMIT,
                         ER_THD(thd, ER_QUERY_EXCEEDED_ROWS_EXAMINED_LIMIT),
                         thd->accessed_rows_and_keys,
                         thd->lex->limit_rows_examined->val_uint());
+    thd->abort_on_warning= saved_abort_on_warning;
     thd->reset_killed();
   }
   /* Disable LIMIT ROWS EXAMINED after query execution. */
@@ -1055,11 +1058,11 @@ int JOIN::optimize()
   if (optimization_state != JOIN::NOT_OPTIMIZED)
     return FALSE;
   optimization_state= JOIN::OPTIMIZATION_IN_PROGRESS;
+  create_explain_query_if_not_exists(thd->lex, thd->mem_root);
 
   int res= optimize_inner();
   if (!res && have_query_plan != QEP_DELETED)
   {
-    create_explain_query_if_not_exists(thd->lex, thd->mem_root);
     have_query_plan= QEP_AVAILABLE;
     save_explain_data(thd->lex->explain, false /* can overwrite */,
                       need_tmp,
@@ -4267,7 +4270,7 @@ make_join_statistics(JOIN *join, List<TABLE_LIST> &tables_list,
       for (i= 0; i < join->table_count ; i++)
         if (double rr= join->best_positions[i].records_read)
           records= COST_MULT(records, rr);
-      ha_rows rows= records > HA_ROWS_MAX ? HA_ROWS_MAX : (ha_rows) records;
+      ha_rows rows= records > (double) HA_ROWS_MAX ? HA_ROWS_MAX : (ha_rows) records;
       set_if_smaller(rows, unit->select_limit_cnt);
       join->select_lex->increase_derived_records(rows);
     }
@@ -7654,7 +7657,6 @@ double table_cond_selectivity(JOIN *join, uint idx, JOIN_TAB *s,
           something went wrong.
 	*/
         sel /= (double)table->quick_rows[key] / (double) table->stat_records();
-        DBUG_ASSERT(0 < sel && sel <= 2.0);
         set_if_smaller(sel, 1.0);
         used_range_selectivity= true;
       }
@@ -7703,7 +7705,6 @@ double table_cond_selectivity(JOIN *join, uint idx, JOIN_TAB *s,
               if (table->field[fldno]->cond_selectivity > 0)
 	      {            
                 sel /= table->field[fldno]->cond_selectivity;
-                DBUG_ASSERT(0 < sel && sel <= 2.0);
                 set_if_smaller(sel, 1.0);
               }
               /* 
@@ -7761,7 +7762,6 @@ double table_cond_selectivity(JOIN *join, uint idx, JOIN_TAB *s,
           if (field->cond_selectivity > 0)
 	  {
             sel/= field->cond_selectivity;
-            DBUG_ASSERT(0 < sel && sel <= 2.0);  
             set_if_smaller(sel, 1.0);
           }
           break;
@@ -7773,7 +7773,6 @@ double table_cond_selectivity(JOIN *join, uint idx, JOIN_TAB *s,
   sel*= table_multi_eq_cond_selectivity(join, idx, s, rem_tables,
                                         keyparts, ref_keyuse_steps);
 
-  DBUG_ASSERT(0.0 < sel && sel <= 1.0);
   return sel;
 }
 
@@ -13673,12 +13672,16 @@ static int compare_fields_by_table_order(Item *field1,
 {
   int cmp= 0;
   bool outer_ref= 0;
-  Item_field *f1= (Item_field *) (field1->real_item());
-  Item_field *f2= (Item_field *) (field2->real_item());
-  if (field1->const_item() || f1->const_item())
+  Item *field1_real= field1->real_item();
+  Item *field2_real= field2->real_item();
+
+  if (field1->const_item() || field1_real->const_item())
     return 1;
-  if (field2->const_item() || f2->const_item())
+  if (field2->const_item() || field2_real->const_item())
     return -1;
+
+  Item_field *f1= (Item_field *) field1_real;
+  Item_field *f2= (Item_field *) field2_real;
   if (f2->used_tables() & OUTER_REF_TABLE_BIT)
   {  
     outer_ref= 1;
@@ -14161,7 +14164,7 @@ static COND* substitute_for_best_equal_field(THD *thd, JOIN_TAB *context_tab,
     }	 
   }
   else if (cond->type() == Item::FUNC_ITEM && 
-           ((Item_cond*) cond)->functype() == Item_func::MULT_EQUAL_FUNC)
+           ((Item_func*) cond)->functype() == Item_func::MULT_EQUAL_FUNC)
   {
     item_equal= (Item_equal *) cond;
     item_equal->sort(&compare_fields_by_table_order, table_join_idx);
@@ -19574,7 +19577,7 @@ join_read_last(JOIN_TAB *tab)
 {
   TABLE *table=tab->table;
   int error= 0;
-  DBUG_ENTER("join_read_first");
+  DBUG_ENTER("join_read_last");
 
   if (table->covering_keys.is_set(tab->index) && !table->no_keyread &&
       !table->key_read)
@@ -21600,6 +21603,9 @@ check_reverse_order:
     }
     else if (select && select->quick)
       select->quick->need_sorted_output();
+
+    tab->read_record.unlock_row= (tab->type == JT_EQ_REF) ?
+                                 join_read_key_unlock_row : rr_unlock_row;
 
   } // QEP has been modified
 

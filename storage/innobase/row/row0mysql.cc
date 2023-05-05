@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 2000, 2018, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2015, 2019, MariaDB Corporation.
+Copyright (c) 2015, 2020, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -807,7 +807,7 @@ row_create_prebuilt(
 					temp_index->fields[i].fixed_len;
 			}
 		}
-		srch_key_len = max(srch_key_len,temp_len);
+		srch_key_len = std::max(srch_key_len,temp_len);
 	}
 
 	ut_a(srch_key_len <= MAX_SRCH_KEY_VAL_BUFFER);
@@ -1125,7 +1125,7 @@ row_update_statistics_if_needed(
 		    && dict_stats_auto_recalc_is_enabled(table)) {
 
 #ifdef WITH_WSREP
-			if (wsrep_on(trx->mysql_thd) &&
+			if (trx->is_wsrep() &&
 			    wsrep_thd_is_BF(trx->mysql_thd, FALSE)) {
 				WSREP_DEBUG("Avoiding background statistics"
 					    " calculation for table %s",
@@ -3205,12 +3205,26 @@ row_discard_tablespace_for_mysql(
 		err = DB_ERROR;
 
 	} else {
+		bool fts_exist = (dict_table_has_fts_index(table)
+				  || DICT_TF2_FLAG_IS_SET(
+					  table, DICT_TF2_FTS_HAS_DOC_ID));
+
+		if (fts_exist) {
+			row_mysql_unlock_data_dictionary(trx);
+			fts_optimize_remove_table(table);
+			row_mysql_lock_data_dictionary(trx);
+		}
+
 		/* Do foreign key constraint checks. */
 
 		err = row_discard_tablespace_foreign_key_checks(trx, table);
 
 		if (err == DB_SUCCESS) {
 			err = row_discard_tablespace(trx, table);
+		}
+
+		if (fts_exist && err != DB_SUCCESS) {
+			fts_optimize_add_table(table);
 		}
 	}
 

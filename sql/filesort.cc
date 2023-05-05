@@ -256,7 +256,8 @@ ha_rows filesort(THD *thd, TABLE *table, SORT_FIELD *sortorder, uint s_length,
     while (memory_available >= min_sort_memory)
     {
       ulonglong keys= memory_available / (param.rec_length + sizeof(char*));
-      param.max_keys_per_buffer= (uint) MY_MIN(num_rows, keys);
+      param.max_keys_per_buffer= MY_MAX(MERGEBUFF2,
+                                        (uint) MY_MIN(num_rows, keys));
       if (table_sort.get_sort_keys())
       {
         // If we have already allocated a buffer, it better have same size!
@@ -343,6 +344,7 @@ ha_rows filesort(THD *thd, TABLE *table, SORT_FIELD *sortorder, uint s_length,
     param.max_keys_per_buffer=((param.max_keys_per_buffer *
                                 (param.rec_length + sizeof(char*))) /
                                param.rec_length - 1);
+    set_if_bigger(param.max_keys_per_buffer, 1);
     maxbuffer--;				// Offset from 0
     if (merge_many_buff(&param,
                         (uchar*) table_sort.get_sort_keys(),
@@ -854,7 +856,7 @@ static ha_rows find_all_keys(THD *thd, Sort_param *param, SQL_SELECT *select,
   }
   if (!quick_select)
   {
-    (void) file->extra(HA_EXTRA_NO_CACHE);	/* End cacheing of records */
+    (void) file->extra(HA_EXTRA_NO_CACHE);	/* End caching of records */
     if (!next_pos)
       file->ha_rnd_end();
   }
@@ -862,7 +864,7 @@ static ha_rows find_all_keys(THD *thd, Sort_param *param, SQL_SELECT *select,
   if (thd->is_error())
     DBUG_RETURN(HA_POS_ERROR);
   
-  /* Signal we should use orignal column read and write maps */
+  /* Signal we should use original column read and write maps */
   sort_form->column_bitmaps_set(save_read_set, save_write_set, save_vcol_set);
 
   DBUG_PRINT("test",("error: %d  indexpos: %d",error,indexpos));
@@ -1139,7 +1141,7 @@ static void make_sortkey(Sort_param *param,
 	}
       case ROW_RESULT:
       default: 
-	// This case should never be choosen
+	// This case should never be chosen
 	DBUG_ASSERT(0);
 	break;
       }
@@ -1925,7 +1927,7 @@ sortlength(THD *thd, SORT_FIELD *sortorder, uint s_length,
 	break;
       case ROW_RESULT:
       default: 
-	// This case should never be choosen
+	// This case should never be chosen
 	DBUG_ASSERT(0);
 	break;
       }

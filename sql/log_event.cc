@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2000, 2019, Oracle and/or its affiliates.
-   Copyright (c) 2009, 2019, MariaDB
+   Copyright (c) 2009, 2020, MariaDB
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -1632,7 +1632,7 @@ Log_event* Log_event::read_log_event(const char* buf, uint event_len,
     else
       DBUG_RETURN(NULL);
 #else
-    *error= ER(ER_BINLOG_READ_EVENT_CHECKSUM_FAILURE);
+    *error= ER_THD_OR_DEFAULT(current_thd, ER_BINLOG_READ_EVENT_CHECKSUM_FAILURE);
     sql_print_error("%s", *error);
     DBUG_RETURN(NULL);
 #endif
@@ -2575,13 +2575,20 @@ log_event_print_value(IO_CACHE *file, const uchar *ptr,
                 "Not enough metadata to display the value. ");
     break;
 
+  case MYSQL_TYPE_GEOMETRY:
+    strmake(typestr, "GEOMETRY", typestr_length);
+    if (!ptr)
+      goto return_null;
+
+    length= uint4korr(ptr);
+    my_b_write_quoted(file, ptr + meta, length);
+    return length + meta;
+
   default:
     {
-      char tmp[5];
-      my_snprintf(tmp, sizeof(tmp), "%04x", meta);
-      my_b_printf(file,
-                  "!! Don't know how to handle column type=%d meta=%d (%s)",
-                  type, meta, tmp);
+      fprintf(stderr,
+              "\nError: Don't know how to handle column type: %d meta: %d (%04x)\n",
+              type, meta, meta);
     }
     break;
   }
@@ -2865,10 +2872,10 @@ void Log_event::print_base64(IO_CACHE* file,
     default:
       break;
     }
-    
+
     if (ev)
     {
-      ev->print_verbose(file, print_event_info);
+      ev->print_verbose(&print_event_info->tail_cache, print_event_info);
       delete ev;
     }
   }
@@ -3444,7 +3451,7 @@ get_str_len_and_pointer(const Log_event::Byte **src,
                         const Log_event::Byte *end)
 {
   if (*src >= end)
-    return -1;       // Will be UINT_MAX in two-complement arithmetics
+    return -1;       // Will be UINT_MAX in two-complement arithmetic
   uint length= **src;
   if (length > 0)
   {
@@ -3492,6 +3499,18 @@ code_name(int code)
 }
 #endif
 
+#define VALIDATE_BYTES_READ(CUR_POS, START, EVENT_LEN)      \
+  do {                                                      \
+       uchar *cur_pos= (uchar *)CUR_POS;                    \
+       uchar *start= (uchar *)START;                        \
+       uint len= EVENT_LEN;                                 \
+       uint bytes_read= (uint)(cur_pos - start);            \
+       DBUG_PRINT("info", ("Bytes read: %u event_len:%u.\n",\
+             bytes_read, len));                             \
+       if (bytes_read >= len)                               \
+         DBUG_VOID_RETURN;                                  \
+  } while (0)
+
 /**
    Macro to check that there is enough space to read from memory.
 
@@ -3502,7 +3521,6 @@ code_name(int code)
 #define CHECK_SPACE(PTR,END,CNT)                      \
   do {                                                \
     DBUG_PRINT("info", ("Read %s", code_name(pos[-1]))); \
-    DBUG_ASSERT((PTR) + (CNT) <= (END));              \
     if ((PTR) + (CNT) > (END)) {                      \
       DBUG_PRINT("info", ("query= 0"));               \
       query= 0;                                       \
@@ -3799,7 +3817,7 @@ Query_log_event::Query_log_event(const char* buf, uint event_len,
 
   /* A 2nd variable part; this is common to all versions */ 
   memcpy((char*) start, end, data_len);          // Copy db and query
-  start[data_len]= '\0';              // End query with \0 (For safetly)
+  start[data_len]= '\0';              // End query with \0 (For safety)
   db= (char *)start;
   query= (char *)(start + db_len + 1);
   q_len= data_len - db_len -1;
@@ -3815,7 +3833,9 @@ Query_log_event::Query_log_event(const char* buf, uint event_len,
 
   uint32 max_length= uint32(event_len - ((const char*)(end + db_len + 1) -
                                          (buf - common_header_len)));
-  if (q_len != max_length)
+  if (q_len != max_length ||
+      (event_len < uint((const char*)(end + db_len + 1) -
+                        (buf - common_header_len))))
   {
     q_len= 0;
     query= NULL;
@@ -4757,7 +4777,7 @@ Query_log_event::do_shall_skip(rpl_group_info *rgi)
     }
   }
 #ifdef WITH_WSREP
-  else if (WSREP_ON && wsrep_mysql_replication_bundle && opt_slave_domain_parallel_threads == 0 &&
+  else if (WSREP(thd) && wsrep_mysql_replication_bundle && opt_slave_domain_parallel_threads == 0 &&
            thd->wsrep_mysql_replicated > 0 &&
            (is_begin() || is_commit()))
   {
@@ -4771,7 +4791,7 @@ Query_log_event::do_shall_skip(rpl_group_info *rgi)
       thd->wsrep_mysql_replicated = 0;
     }
   }
-#endif
+#endif /* WITH_WSREP */
   DBUG_RETURN(Log_event::do_shall_skip(rgi));
 }
 
@@ -5390,7 +5410,7 @@ int Format_description_log_event::do_update_pos(rpl_group_info *rgi)
       If we do not skip stepping the group log position (and the
       server id was changed when restarting the server), it might well
       be that we start executing at a position that is invalid, e.g.,
-      at a Rows_log_event or a Query_log_event preceeded by a
+      at a Rows_log_event or a Query_log_event preceded by a
       Intvar_log_event instead of starting at a Table_map_log_event or
       the Intvar_log_event respectively.
      */
@@ -5502,7 +5522,7 @@ Format_description_log_event::is_version_before_checksum(const master_version_sp
    
    @return  the version-safe checksum alg descriptor where zero
             designates no checksum, 255 - the orginator is
-            checksum-unaware (effectively no checksum) and the actuall
+            checksum-unaware (effectively no checksum) and the actual
             [1-254] range alg descriptor.
 */
 enum enum_binlog_checksum_alg get_checksum_alg(const char* buf, ulong len)
@@ -5889,6 +5909,8 @@ int Load_log_event::copy_log_event(const char *buf, ulong event_len,
 {
   DBUG_ENTER("Load_log_event::copy_log_event");
   uint data_len;
+  if ((int) event_len <= body_offset)
+    DBUG_RETURN(1);
   char* buf_end = (char*)buf + event_len;
   /* this is the beginning of the post-header */
   const char* data_head = buf + description_event->common_header_len;
@@ -5898,9 +5920,7 @@ int Load_log_event::copy_log_event(const char *buf, ulong event_len,
   table_name_len = (uint)data_head[L_TBL_LEN_OFFSET];
   db_len = (uint)data_head[L_DB_LEN_OFFSET];
   num_fields = uint4korr(data_head + L_NUM_FIELDS_OFFSET);
-	  
-  if ((int) event_len < body_offset)
-    DBUG_RETURN(1);
+
   /*
     Sql_ex.init() on success returns the pointer to the first byte after
     the sql_ex structure, which is the start of field lengths array.
@@ -5909,7 +5929,7 @@ int Load_log_event::copy_log_event(const char *buf, ulong event_len,
                                         buf_end,
                                         (uchar)buf[EVENT_TYPE_OFFSET] != LOAD_EVENT)))
     DBUG_RETURN(1);
-  
+
   data_len = event_len - body_offset;
   if (num_fields > data_len) // simple sanity check against corruption
     DBUG_RETURN(1);
@@ -6208,7 +6228,7 @@ int Load_log_event::do_apply_event(NET* net, rpl_group_info *rgi,
         /*
           When replication is running fine, if it was DUP_ERROR on the
           master then we could choose IGNORE here, because if DUP_ERROR
-          suceeded on master, and data is identical on the master and slave,
+          succeeded on master, and data is identical on the master and slave,
           then there should be no uniqueness errors on slave, so IGNORE is
           the same as DUP_ERROR. But in the unlikely case of uniqueness errors
           (because the data on the master and slave happen to be different
@@ -6449,7 +6469,7 @@ Rotate_log_event::Rotate_log_event(const char* buf, uint event_len,
   // The caller will ensure that event_len is what we have at EVENT_LEN_OFFSET
   uint8 post_header_len= description_event->post_header_len[ROTATE_EVENT-1];
   uint ident_offset;
-  if (event_len < LOG_EVENT_MINIMAL_HEADER_LEN)
+  if (event_len < (uint)(LOG_EVENT_MINIMAL_HEADER_LEN + post_header_len))
     DBUG_VOID_RETURN;
   buf+= LOG_EVENT_MINIMAL_HEADER_LEN;
   pos= post_header_len ? uint8korr(buf + R_POS_OFFSET) : 4;
@@ -6741,7 +6761,7 @@ Gtid_log_event::Gtid_log_event(THD *thd_arg, uint64 seq_no_arg,
 
 /*
   Used to record GTID while sending binlog to slave, without having to
-  fully contruct every Gtid_log_event() needlessly.
+  fully construct every Gtid_log_event() needlessly.
 */
 bool
 Gtid_log_event::peek(const char *event_start, size_t event_len,
@@ -7263,7 +7283,7 @@ Gtid_list_log_event::print(FILE *file, PRINT_EVENT_INFO *print_event_info)
 
 /*
   Used to record gtid_list event while sending binlog to slave, without having to
-  fully contruct the event object.
+  fully construct the event object.
 */
 bool
 Gtid_list_log_event::peek(const char *event_start, uint32 event_len,
@@ -7343,7 +7363,7 @@ Intvar_log_event::Intvar_log_event(const char* buf,
                                    const Format_description_log_event* description_event)
   :Log_event(buf, description_event)
 {
-  /* The Post-Header is empty. The Varible Data part begins immediately. */
+  /* The Post-Header is empty. The Variable Data part begins immediately. */
   buf+= description_event->common_header_len +
     description_event->post_header_len[INTVAR_EVENT-1];
   type= buf[I_TYPE_OFFSET];
@@ -7742,7 +7762,7 @@ Xid_log_event::do_shall_skip(rpl_group_info *rgi)
     DBUG_RETURN(Log_event::EVENT_SKIP_COUNT);
   }
 #ifdef WITH_WSREP
-  else if (wsrep_mysql_replication_bundle && WSREP_ON &&
+  else if (WSREP(thd) && wsrep_mysql_replication_bundle &&
            opt_slave_domain_parallel_threads == 0)
   {
     if (++thd->wsrep_mysql_replicated < (int)wsrep_mysql_replication_bundle)
@@ -7955,6 +7975,11 @@ User_var_log_event(const char* buf, uint event_len,
       we keep the flags set to UNDEF_F.
     */
     uint bytes_read= ((val + val_len) - buf_start);
+    if (bytes_read > event_len)
+    {
+      error= true;
+      goto err;
+    }
     if ((data_written - bytes_read) > 0)
     {
       flags= (uint) *(buf + UV_VAL_IS_NULL + UV_VAL_TYPE_SIZE +
@@ -8117,7 +8142,7 @@ void User_var_log_event::print(FILE* file, PRINT_EVENT_INFO* print_event_info)
         return;
       str_to_hex(hex_str, val, val_len);
       /*
-        For proper behaviour when mysqlbinlog|mysql, we need to explicitely
+        For proper behaviour when mysqlbinlog|mysql, we need to explicitly
         specify the variable's collation. It will however cause problems when
         people want to mysqlbinlog|mysql into another server not supporting the
         character set. But there's not much to do about this and it's unlikely.
@@ -8566,7 +8591,7 @@ void Create_file_log_event::pack_info(Protocol *protocol)
 
 /**
   Create_file_log_event::do_apply_event()
-  Constructor for Create_file_log_event to intantiate an event
+  Constructor for Create_file_log_event to instantiate an event
   from the relay log on the slave.
 
   @retval
@@ -9513,8 +9538,15 @@ Rows_log_event::Rows_log_event(const char *buf, uint event_len,
   uint8 const common_header_len= description_event->common_header_len;
   Log_event_type event_type= (Log_event_type) buf[EVENT_TYPE_OFFSET];
   m_type= event_type;
-  
+  m_cols_ai.bitmap= 0;
+
   uint8 const post_header_len= description_event->post_header_len[event_type-1];
+
+  if (event_len < (uint)(common_header_len + post_header_len))
+  {
+    m_cols.bitmap= 0;
+    DBUG_VOID_RETURN;
+  }
 
   DBUG_PRINT("enter",("event_len: %u  common_header_len: %d  "
 		      "post_header_len: %d",
@@ -9546,7 +9578,14 @@ Rows_log_event::Rows_log_event(const char *buf, uint event_len,
       which includes length bytes
     */
     var_header_len= uint2korr(post_start);
-    assert(var_header_len >= 2);
+    /* Check length and also avoid out of buffer read */
+    if (var_header_len < 2 ||
+        event_len < static_cast<unsigned int>(var_header_len +
+          (post_start - buf)))
+    {
+      m_cols.bitmap= 0;
+      DBUG_VOID_RETURN;
+    }
     var_header_len-= 2;
 
     /* Iterate over var-len header, extracting 'chunks' */
@@ -9597,7 +9636,7 @@ Rows_log_event::Rows_log_event(const char *buf, uint event_len,
     DBUG_VOID_RETURN;
   }
 
-  /* if my_bitmap_init fails, catched in is_valid() */
+  /* if my_bitmap_init fails, caught in is_valid() */
   if (likely(!my_bitmap_init(&m_cols,
                           m_width <= sizeof(m_bitbuf)*8 ? m_bitbuf : NULL,
                           m_width,
@@ -9978,7 +10017,7 @@ int Rows_log_event::do_apply_event(rpl_group_info *rgi)
     */
 
     {
-      DBUG_PRINT("debug", ("Checking compability of tables to lock - tables_to_lock: %p",
+      DBUG_PRINT("debug", ("Checking compatibility of tables to lock - tables_to_lock: %p",
                            rgi->tables_to_lock));
 
       /**
@@ -10033,7 +10072,7 @@ int Rows_log_event::do_apply_event(rpl_group_info *rgi)
                                ptr->table->s->table_name.str));
           /*
             We should not honour --slave-skip-errors at this point as we are
-            having severe errors which should not be skiped.
+            having severe errors which should not be skipped.
           */
           thd->is_slave_error= 1;
           /* remove trigger's tables */
@@ -10414,7 +10453,7 @@ static int rows_event_stmt_cleanup(rpl_group_info *rgi, THD * thd)
 /**
    The method either increments the relay log position or
    commits the current statement and increments the master group 
-   possition if the event is STMT_END_F flagged and
+   position if the event is STMT_END_F flagged and
    the statement corresponds to the autocommit query (i.e replicated
    without wrapping in BEGIN/COMMIT)
 
@@ -10523,7 +10562,7 @@ void Rows_log_event::pack_info(Protocol *protocol)
 #ifdef MYSQL_CLIENT
 /**
   Print an event "body" cache to @c file possibly in two fragments.
-  Each fragement is optionally per @c do_wrap to produce an SQL statement.
+  Each fragment is optionally per @c do_wrap to produce an SQL statement.
 
   @param file      a file to print to
   @param body      the "body" IO_CACHE of event
@@ -10639,6 +10678,7 @@ void Rows_log_event::print_helper(FILE *file,
 {
   IO_CACHE *const head= &print_event_info->head_cache;
   IO_CACHE *const body= &print_event_info->body_cache;
+  IO_CACHE *const tail= &print_event_info->tail_cache;
   bool do_print_encoded=
     print_event_info->base64_output_mode != BASE64_OUTPUT_DECODE_ROWS &&
     !print_event_info->short_form;
@@ -10662,6 +10702,11 @@ void Rows_log_event::print_helper(FILE *file,
     }
     copy_cache_to_file_wrapped(file, body, do_print_encoded,
                                print_event_info->delimiter);
+    if (copy_event_cache_to_file_and_reinit(tail, file))
+    {
+      tail->error= -1;
+      return;
+    }
   }
 }
 #endif
@@ -10996,14 +11041,12 @@ Table_map_log_event::Table_map_log_event(const char *buf, uint event_len,
     m_data_size(0), m_field_metadata(0), m_field_metadata_size(0),
     m_null_bits(0), m_meta_memory(NULL)
 {
-  unsigned int bytes_read= 0;
   DBUG_ENTER("Table_map_log_event::Table_map_log_event(const char*,uint,...)");
 
   uint8 common_header_len= description_event->common_header_len;
   uint8 post_header_len= description_event->post_header_len[TABLE_MAP_EVENT-1];
   DBUG_PRINT("info",("event_len: %u  common_header_len: %d  post_header_len: %d",
                      event_len, common_header_len, post_header_len));
-
   /*
     Don't print debug messages when running valgrind since they can
     trigger false warnings.
@@ -11012,10 +11055,14 @@ Table_map_log_event::Table_map_log_event(const char *buf, uint event_len,
   DBUG_DUMP("event buffer", (uchar*) buf, event_len);
 #endif
 
+  if (event_len < (uint)(common_header_len + post_header_len))
+    DBUG_VOID_RETURN;
+
   /* Read the post-header */
   const char *post_start= buf + common_header_len;
 
   post_start+= TM_MAPID_OFFSET;
+  VALIDATE_BYTES_READ(post_start, buf, event_len);
   if (post_header_len == 6)
   {
     /* Master is of an intermediate source tree before 5.1.4. Id is 4 bytes */
@@ -11038,15 +11085,18 @@ Table_map_log_event::Table_map_log_event(const char *buf, uint event_len,
 
   /* Extract the length of the various parts from the buffer */
   uchar const *const ptr_dblen= (uchar const*)vpart + 0;
+  VALIDATE_BYTES_READ(ptr_dblen, buf, event_len);
   m_dblen= *(uchar*) ptr_dblen;
 
   /* Length of database name + counter + terminating null */
   uchar const *const ptr_tbllen= ptr_dblen + m_dblen + 2;
+  VALIDATE_BYTES_READ(ptr_tbllen, buf, event_len);
   m_tbllen= *(uchar*) ptr_tbllen;
 
   /* Length of table name + counter + terminating null */
   uchar const *const ptr_colcnt= ptr_tbllen + m_tbllen + 2;
   uchar *ptr_after_colcnt= (uchar*) ptr_colcnt;
+  VALIDATE_BYTES_READ(ptr_after_colcnt, buf, event_len);
   m_colcnt= net_field_length(&ptr_after_colcnt);
 
   DBUG_PRINT("info",("m_dblen: %lu  off: %ld  m_tbllen: %lu  off: %ld  m_colcnt: %lu  off: %ld",
@@ -11069,23 +11119,27 @@ Table_map_log_event::Table_map_log_event(const char *buf, uint event_len,
     memcpy(m_coltype, ptr_after_colcnt, m_colcnt);
 
     ptr_after_colcnt= ptr_after_colcnt + m_colcnt;
-    bytes_read= (uint) (ptr_after_colcnt - (uchar *)buf);
-    DBUG_PRINT("info", ("Bytes read: %d.\n", bytes_read));
-    if (bytes_read < event_len)
+    VALIDATE_BYTES_READ(ptr_after_colcnt, buf, event_len);
+    m_field_metadata_size= net_field_length(&ptr_after_colcnt);
+    if(m_field_metadata_size <= (m_colcnt * 2))
     {
-      m_field_metadata_size= net_field_length(&ptr_after_colcnt);
-      DBUG_ASSERT(m_field_metadata_size <= (m_colcnt * 2));
       uint num_null_bytes= (m_colcnt + 7) / 8;
       m_meta_memory= (uchar *)my_multi_malloc(MYF(MY_WME),
-                                     &m_null_bits, num_null_bytes,
-                                     &m_field_metadata, m_field_metadata_size,
-                                     NULL);
+          &m_null_bits, num_null_bytes,
+          &m_field_metadata, m_field_metadata_size,
+          NULL);
       memcpy(m_field_metadata, ptr_after_colcnt, m_field_metadata_size);
       ptr_after_colcnt= (uchar*)ptr_after_colcnt + m_field_metadata_size;
       memcpy(m_null_bits, ptr_after_colcnt, num_null_bytes);
     }
+    else
+    {
+      m_coltype= NULL;
+      my_free(m_memory);
+      m_memory= NULL;
+      DBUG_VOID_RETURN;
+    }
   }
-
   DBUG_VOID_RETURN;
 }
 #endif
@@ -12136,7 +12190,7 @@ record_compare_exit:
   Find the best key to use when locating the row in @c find_row().
 
   A primary key is preferred if it exists; otherwise a unique index is
-  preferred. Else we pick the index with the smalles rec_per_key value.
+  preferred. Else we pick the index with the smallest rec_per_key value.
 
   If a suitable key is found, set @c m_key, @c m_key_nr and @c m_key_info
   member fields appropriately.
@@ -12269,7 +12323,7 @@ static int row_not_found_error(rpl_group_info *rgi)
   Locate the current row in event's table.
 
   The current row is pointed by @c m_curr_row. Member @c m_width tells
-  how many columns are there in the row (this can be differnet from
+  how many columns are there in the row (this can be different from
   the number of columns in the table). It is assumed that event's
   table is already open and pointed by @c m_table.
 
@@ -12310,7 +12364,7 @@ int Rows_log_event::find_row(rpl_group_info *rgi)
     rpl_row_tabledefs.test specifies that
     if the extra field on the slave does not have a default value
     and this is okay with Delete or Update events.
-    Todo: fix wl3228 hld that requires defauls for all types of events
+    Todo: fix wl3228 hld that requires defaults for all types of events
   */
   
   prepare_record(table, m_width, FALSE);
@@ -12554,7 +12608,7 @@ int Rows_log_event::find_row(rpl_group_info *rgi)
     while (record_compare(table));
     
     /* 
-      Note: above record_compare will take into accout all record fields 
+      Note: above record_compare will take into account all record fields 
       which might be incorrect in case a partial row was given in the event
      */
 
@@ -12739,9 +12793,12 @@ void Update_rows_log_event::init(MY_BITMAP const *cols)
 
 Update_rows_log_event::~Update_rows_log_event()
 {
-  if (m_cols_ai.bitmap == m_bitbuf_ai) // no my_malloc happened
-    m_cols_ai.bitmap= 0; // so no my_free in my_bitmap_free
-  my_bitmap_free(&m_cols_ai); // To pair with my_bitmap_init().
+  if (m_cols_ai.bitmap)
+  {
+    if (m_cols_ai.bitmap == m_bitbuf_ai) // no my_malloc happened
+      m_cols_ai.bitmap= 0; // so no my_free in my_bitmap_free
+    my_bitmap_free(&m_cols_ai); // To pair with my_bitmap_init().
+  }
 }
 
 
@@ -13176,6 +13233,7 @@ st_print_event_info::st_print_event_info()
   myf const flags = MYF(MY_WME | MY_NABP);
   open_cached_file(&head_cache, NULL, NULL, 0, flags);
   open_cached_file(&body_cache, NULL, NULL, 0, flags);
+  open_cached_file(&tail_cache, NULL, NULL, 0, flags);
 }
 #endif
 

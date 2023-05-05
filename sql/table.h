@@ -594,15 +594,94 @@ enum open_frm_error {
   from persistent statistical tables
 */
 
-struct TABLE_STATISTICS_CB
+class TABLE_STATISTICS_CB
 {
+  class Statistics_state
+  {
+    enum state_codes
+    {
+      EMPTY,   /** data is not loaded */
+      LOADING, /** data is being loaded in some connection */
+      READY    /** data is loaded and available for use */
+    };
+    int32 state;
+
+  public:
+    /** No state copy */
+    Statistics_state &operator=(const Statistics_state &) { return *this; }
+
+    /** Checks if data loading have been completed */
+    bool is_ready() const
+    {
+      return my_atomic_load32_explicit(const_cast<int32*>(&state),
+                                       MY_MEMORY_ORDER_ACQUIRE) == READY;
+    }
+
+    /**
+      Sets mutual exclusion for data loading
+
+      If stats are in LOADING state, waits until state change.
+
+      @return
+        @retval true atomic EMPTY -> LOADING transfer completed, ok to load
+        @retval false stats are in READY state, no need to load
+    */
+    bool start_load()
+    {
+      for (;;)
+      {
+        int32 expected= EMPTY;
+        if (my_atomic_cas32_weak_explicit(&state, &expected, LOADING,
+                                          MY_MEMORY_ORDER_RELAXED,
+                                          MY_MEMORY_ORDER_RELAXED))
+          return true;
+        if (expected == READY)
+          return false;
+        (void) LF_BACKOFF;
+      }
+    }
+
+    /** Marks data available for subsequent use */
+    void end_load()
+    {
+      DBUG_ASSERT(my_atomic_load32_explicit(&state, MY_MEMORY_ORDER_RELAXED) ==
+                  LOADING);
+      my_atomic_store32_explicit(&state, READY, MY_MEMORY_ORDER_RELEASE);
+    }
+
+    /** Restores empty state on error (e.g. OOM) */
+    void abort_load()
+    {
+      DBUG_ASSERT(my_atomic_load32_explicit(&state, MY_MEMORY_ORDER_RELAXED) ==
+                  LOADING);
+      my_atomic_store32_explicit(&state, EMPTY, MY_MEMORY_ORDER_RELAXED);
+    }
+  };
+
+  class Statistics_state stats_state;
+  class Statistics_state hist_state;
+
+public:
   MEM_ROOT  mem_root; /* MEM_ROOT to allocate statistical data for the table */
   Table_statistics *table_stats; /* Structure to access the statistical data */
-  bool stats_can_be_read;        /* Memory for statistical data is allocated */
-  bool stats_is_read;            /* Statistical data for table has been read
-                                    from statistical tables */
-  bool histograms_can_be_read;
-  bool histograms_are_read;   
+  ulong total_hist_size;         /* Total size of all histograms */
+
+  bool histograms_are_ready() const
+  {
+    return !total_hist_size || hist_state.is_ready();
+  }
+
+  bool start_histograms_load()
+  {
+    return total_hist_size && hist_state.start_load();
+  }
+
+  void end_histograms_load() { hist_state.end_load(); }
+  void abort_histograms_load() { hist_state.abort_load(); }
+  bool stats_are_ready() const { return stats_state.is_ready(); }
+  bool start_stats_load() { return stats_state.start_load(); }
+  void end_stats_load() { stats_state.end_load(); }
+  void abort_stats_load() { stats_state.abort_load(); }
 };
 
 
@@ -1212,9 +1291,16 @@ public:
   /* number of select if it is derived table */
   uint          derived_select_number;
   /*
-    0 or JOIN_TYPE_{LEFT|RIGHT}. Currently this is only compared to 0.
-    If maybe_null !=0, this table is inner w.r.t. some outer join operation,
-    and null_row may be true.
+    Possible values:
+     - 0 by default
+     - JOIN_TYPE_{LEFT|RIGHT} if the table is inner w.r.t an outer join
+       operation
+     - 1 if the SELECT has mixed_implicit_grouping=1. example:
+       select max(col1), col2 from t1. In this case, the query produces
+       one row with all columns having NULL values.
+
+    Interpetation: If maybe_null!=0, all fields of the table are considered
+    NULLable (and have NULL values when null_row=true)
   */
   uint maybe_null;
   int		current_lock;           /* Type of lock on table */
@@ -1450,6 +1536,7 @@ public:
   }
 
   bool update_const_key_parts(COND *conds);
+  void initialize_quick_structures();
 
   my_ptrdiff_t default_values_offset() const
   { return (my_ptrdiff_t) (s->default_values - record[0]); }
@@ -1812,6 +1899,9 @@ struct TABLE_LIST
     open_type= routine ? OT_TEMPORARY_OR_BASE : OT_BASE_ONLY;
     belong_to_view= belong_to_view_arg;
     trg_event_map= trg_event_map_arg;
+    /* MDL is enough for read-only FK checks, we don't need the table */
+    if (prelocking_placeholder == FK && lock_type < TL_WRITE_ALLOW_WRITE)
+      open_strategy= OPEN_STUB;
 
     **last_ptr= this;
     prev_global= *last_ptr;

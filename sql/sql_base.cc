@@ -1,5 +1,5 @@
 /* Copyright (c) 2000, 2016, Oracle and/or its affiliates.
-   Copyright (c) 2010, 2016, MariaDB
+   Copyright (c) 2010, 2020, MariaDB
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -1892,7 +1892,7 @@ bool wait_while_table_is_used(THD *thd, TABLE *table,
                    FALSE);
   /* extra() call must come only after all instances above are closed */
   if (function != HA_EXTRA_NOT_USED)
-    (void) table->file->extra(function);
+    DBUG_RETURN(table->file->extra(function));
   DBUG_RETURN(FALSE);
 }
 
@@ -4784,7 +4784,7 @@ restart:
     }
   }
 
-  if (WSREP_ON                                         &&
+  if (WSREP(thd)                                       &&
       wsrep_replicate_myisam                           &&
       (*start)                                         &&
       (*start)->table                                  &&
@@ -5037,9 +5037,18 @@ bool Lock_tables_prelocking_strategy::
 handle_table(THD *thd, Query_tables_list *prelocking_ctx,
              TABLE_LIST *table_list, bool *need_prelocking)
 {
+  TABLE_LIST **last= prelocking_ctx->query_tables_last;
+
   if (DML_prelocking_strategy::handle_table(thd, prelocking_ctx, table_list,
                                             need_prelocking))
     return TRUE;
+
+  /*
+    normally we don't need to open FK-prelocked tables for RESTRICT,
+    MDL is enough. But under LOCK TABLES we have to open everything
+  */
+  for (TABLE_LIST *tl= *last; tl; tl= tl->next_global)
+    tl->open_strategy= TABLE_LIST::OPEN_NORMAL;
 
   /* We rely on a caller to check that table is going to be changed. */
   DBUG_ASSERT(table_list->lock_type >= TL_WRITE_ALLOW_WRITE);
@@ -8297,15 +8306,11 @@ bool setup_tables(THD *thd, Name_resolution_context *context,
     FALSE ok;  In this case *map will include the chosen index
     TRUE  error
 */
-bool setup_tables_and_check_access(THD *thd, 
-                                   Name_resolution_context *context,
+bool setup_tables_and_check_access(THD *thd, Name_resolution_context *context,
                                    List<TABLE_LIST> *from_clause,
-                                   TABLE_LIST *tables,
-                                   List<TABLE_LIST> &leaves,
-                                   bool select_insert,
-                                   ulong want_access_first,
-                                   ulong want_access,
-                                   bool full_table_list)
+                                   TABLE_LIST *tables, List<TABLE_LIST> &leaves,
+                                   bool select_insert, ulong want_access_first,
+                                   ulong want_access, bool full_table_list)
 {
   DBUG_ENTER("setup_tables_and_check_access");
 
@@ -8880,8 +8885,7 @@ fill_record(THD *thd, TABLE *table_arg, List<Item> &fields, List<Item> &values,
         rfield->field_index ==  table->next_number_field->field_index)
       table->auto_increment_field_not_null= TRUE;
     if (rfield->vcol_info && 
-        value->type() != Item::DEFAULT_VALUE_ITEM && 
-        value->type() != Item::NULL_ITEM &&
+        !value->vcol_assignment_allowed_value() &&
         table->s->table_category != TABLE_CATEGORY_TEMPORARY)
     {
       push_warning_printf(thd, Sql_condition::WARN_LEVEL_WARN,
@@ -9089,8 +9093,7 @@ fill_record(THD *thd, TABLE *table, Field **ptr, List<Item> &values,
     if (field->field_index == autoinc_index)
       table->auto_increment_field_not_null= TRUE;
     if (field->vcol_info && 
-        value->type() != Item::DEFAULT_VALUE_ITEM && 
-        value->type() != Item::NULL_ITEM &&
+        !value->vcol_assignment_allowed_value() &&
         table->s->table_category != TABLE_CATEGORY_TEMPORARY)
     {
       push_warning_printf(thd, Sql_condition::WARN_LEVEL_WARN,

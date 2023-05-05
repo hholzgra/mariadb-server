@@ -241,7 +241,7 @@ protected:
   };
 
 
-  // String-to-number convertion methods for the old code compatibility
+  // String-to-number conversion methods for the old code compatibility
   longlong longlong_from_string_with_check(CHARSET_INFO *cs, const char *cptr,
                                            const char *end) const
   {
@@ -312,7 +312,7 @@ public:
   /*
     Item context attributes.
     Comparison functions pass their attributes to propagate_equal_fields().
-    For exmple, for string comparison, the collation of the comparison
+    For example, for string comparison, the collation of the comparison
     operation is important inside propagate_equal_fields().
   */
   class Context
@@ -460,7 +460,7 @@ inline bool is_timestamp_type(enum_field_types type)
 
 
 /**
-  Convert temporal real types as retuned by field->real_type()
+  Convert temporal real types as returned by field->real_type()
   to field type as returned by field->type().
   
   @param real_type  Real type.
@@ -954,9 +954,13 @@ public:
     return type();
   }
   inline  int cmp(const uchar *str) { return cmp(ptr,str); }
-  virtual int cmp_max(const uchar *a, const uchar *b, uint max_len)
-    { return cmp(a, b); }
   virtual int cmp(const uchar *,const uchar *)=0;
+  /*
+    The following method is used for comparing prefix keys.
+    Currently it's only used in partitioning.
+  */
+  virtual int cmp_prefix(const uchar *a, const uchar *b, size_t prefix_len)
+  { return cmp(a, b); }
   virtual int cmp_binary(const uchar *a,const uchar *b, uint32 max_length=~0L)
   { return memcmp(a,b,pack_length()); }
   virtual int cmp_offset(uint row_offset)
@@ -1099,6 +1103,13 @@ public:
 
   void make_sort_key(uchar *buff, uint length);
   virtual void make_field(Send_field *);
+
+  /*
+    Some implementations actually may write up to 8 bytes regardless of what
+    size was requested. This is due to the minimum value of the system variable
+    max_sort_length.
+  */
+
   virtual void sort_string(uchar *buff,uint length)=0;
   virtual bool optimize_range(uint idx, uint part);
   virtual void free() {}
@@ -2984,11 +2995,8 @@ public:
   longlong val_int(void);
   String *val_str(String*,String *);
   my_decimal *val_decimal(my_decimal *);
-  int cmp_max(const uchar *, const uchar *, uint max_length);
-  int cmp(const uchar *a,const uchar *b)
-  {
-    return cmp_max(a, b, ~0L);
-  }
+  int cmp(const uchar *a,const uchar *b);
+  int cmp_prefix(const uchar *a, const uchar *b, size_t prefix_len);
   void sort_string(uchar *buff,uint length);
   uint get_key_image(uchar *buff,uint length, imagetype type);
   void set_key_image(const uchar *buff,uint length);
@@ -3070,9 +3078,8 @@ public:
   longlong val_int(void);
   String *val_str(String*,String *);
   my_decimal *val_decimal(my_decimal *);
-  int cmp_max(const uchar *, const uchar *, uint max_length);
-  int cmp(const uchar *a,const uchar *b)
-    { return cmp_max(a, b, ~0L); }
+  int cmp(const uchar *a,const uchar *b);
+  int cmp_prefix(const uchar *a, const uchar *b, size_t prefix_len);
   int cmp(const uchar *a, uint32 a_length, const uchar *b, uint32 b_length);
   int cmp_binary(const uchar *a,const uchar *b, uint32 max_length=~0L);
   int key_cmp(const uchar *,const uchar*);
@@ -3345,7 +3352,7 @@ private:
     This is the reason:
     - Field_bit::cmp_binary() is only implemented in the base class
       (Field::cmp_binary()).
-    - Field::cmp_binary() currenly use pack_length() to calculate how
+    - Field::cmp_binary() currently uses pack_length() to calculate how
       long the data is.
     - pack_length() includes size of the bits stored in the NULL bytes
       of the record.
@@ -3392,7 +3399,7 @@ public:
   }
   int cmp_binary_offset(uint row_offset)
   { return cmp_offset(row_offset); }
-  int cmp_max(const uchar *a, const uchar *b, uint max_length);
+  int cmp_prefix(const uchar *a, const uchar *b, size_t prefix_len);
   int key_cmp(const uchar *a, const uchar *b)
   { return cmp_binary((uchar *) a, (uchar *) b); }
   int key_cmp(const uchar *str, uint length);

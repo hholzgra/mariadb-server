@@ -2,7 +2,7 @@
 
 Copyright (c) 1997, 2017, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2008, Google Inc.
-Copyright (c) 2015, 2018, MariaDB Corporation.
+Copyright (c) 2015, 2020, MariaDB Corporation.
 
 Portions of this file contain modifications contributed and copyrighted by
 Google, Inc. Those modifications are gratefully acknowledged and are described
@@ -3588,7 +3588,7 @@ row_sel_try_search_shortcut_for_mysql(
 
 /*********************************************************************//**
 Check a pushed-down index condition.
-@return ICP_NO_MATCH, ICP_MATCH, or ICP_OUT_OF_RANGE */
+@return ICP_ABORTED_BY_USER, ICP_NO_MATCH, ICP_MATCH, or ICP_OUT_OF_RANGE */
 static
 enum icp_result
 row_search_idx_cond_check(
@@ -3723,9 +3723,16 @@ bool row_search_with_covering_prefix(
 		return false;
 	}
 
+	/* We can avoid a clustered index lookup if
+	all of the following hold:
+	(1) all columns are in the secondary index
+	(2) all values for columns that are prefix-only
+	indexes are shorter than the prefix size
+	This optimization can avoid many IOs for certain schemas. */
 	for (ulint i = 0; i < prebuilt->n_template; i++) {
 		mysql_row_templ_t* templ = prebuilt->mysql_template + i;
 		ulint j = templ->rec_prefix_field_no;
+		ut_ad(!templ->mbminlen == !templ->mbmaxlen);
 
 		/** Condition (1) : is the field in the index. */
 		if (j == ULINT_UNDEFINED) {
@@ -3735,33 +3742,29 @@ bool row_search_with_covering_prefix(
 		/** Condition (2): If this is a prefix index then
 		row's value size shorter than prefix length. */
 
-		if (!templ->rec_field_is_prefix) {
+		if (!templ->rec_field_is_prefix
+		    || rec_offs_nth_sql_null(offsets, j)) {
 			continue;
 		}
 
-		ulint rec_size = rec_offs_nth_size(offsets, j);
 		const dict_field_t* field = dict_index_get_nth_field(index, j);
-		ulint max_chars = field->prefix_len / templ->mbmaxlen;
 
-		ut_a(field->prefix_len > 0);
-
-		if (rec_size < max_chars) {
-			/* Record in bytes shorter than the index
-			prefix length in char. */
+		if (!field->prefix_len) {
 			continue;
 		}
 
-		if (rec_size * templ->mbminlen >= field->prefix_len) {
+		const ulint rec_size = rec_offs_nth_size(offsets, j);
+
+		if (rec_size >= field->prefix_len) {
 			/* Shortest representation string by the
 			byte length of the record is longer than the
 			maximum possible index prefix. */
 			return false;
 		}
 
-		size_t num_chars = rec_field_len_in_chars(
-			field->col, j, rec, offsets);
-
-		if (num_chars >= max_chars) {
+		if (templ->mbminlen != templ->mbmaxlen
+		    && rec_field_len_in_chars(field->col, j, rec, offsets)
+		    >= field->prefix_len / templ->mbmaxlen) {
 			/* No of chars to store the record exceeds
 			the index prefix character length. */
 			return false;
@@ -4107,10 +4110,13 @@ row_search_for_mysql(
 					switch (row_search_idx_cond_check(
 							buf, prebuilt,
 							rec, offsets)) {
+                                        case ICP_ABORTED_BY_USER:
+						mtr_commit(&mtr);
+						err = DB_INTERRUPTED;
+						goto release_search_latch_if_needed;
+                                        case ICP_ERROR:
 					case ICP_NO_MATCH:
 					case ICP_OUT_OF_RANGE:
-                                        case ICP_ABORTED_BY_USER:
-                                        case ICP_ERROR:
 						goto shortcut_mismatch;
 					case ICP_MATCH:
 						goto shortcut_match;
@@ -4846,8 +4852,10 @@ no_gap_lock:
 						buf, prebuilt, rec, offsets)) {
 				case ICP_NO_MATCH:
 					goto next_rec;
-				case ICP_OUT_OF_RANGE:
                                 case ICP_ABORTED_BY_USER:
+					err = DB_INTERRUPTED;
+					goto idx_cond_failed;
+				case ICP_OUT_OF_RANGE:
                                 case ICP_ERROR:
 					err = DB_RECORD_NOT_FOUND;
 					goto idx_cond_failed;
@@ -4901,9 +4909,11 @@ locks_ok_del_marked:
 			row_unlock_for_mysql(prebuilt, TRUE);
 		}
 		goto next_rec;
+	case ICP_ABORTED_BY_USER:
+		err = DB_INTERRUPTED;
+		goto idx_cond_failed;
 	case ICP_OUT_OF_RANGE:
-        case ICP_ABORTED_BY_USER:
-        case ICP_ERROR:
+	case ICP_ERROR:
 		err = DB_RECORD_NOT_FOUND;
 		goto idx_cond_failed;
 	case ICP_MATCH:

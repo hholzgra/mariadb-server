@@ -1,4 +1,4 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 # -*- cperl -*-
 
 # Copyright (c) 2004, 2014, Oracle and/or its affiliates.
@@ -129,6 +129,8 @@ our $path_testlog;
 our $default_vardir;
 our $opt_vardir;                # Path to use for var/ dir
 our $plugindir;
+our $opt_xml_report;            # XML output
+
 my $path_vardir_trace;          # unix formatted opt_vardir for trace files
 my $opt_tmpdir;                 # Path to use for tmp/ dir
 my $opt_tmpdir_pid;
@@ -279,7 +281,7 @@ my $current_config_name; # The currently running config file template
 our @opt_experimentals;
 our $experimental_test_cases= [];
 
-my $baseport;
+our $baseport;
 # $opt_build_thread may later be set from $opt_port_base
 my $opt_build_thread= $ENV{'MTR_BUILD_THREAD'} || "auto";
 my $opt_port_base= $ENV{'MTR_PORT_BASE'} || "auto";
@@ -320,7 +322,8 @@ my $opt_valgrind_mysqld= 0;
 my $opt_valgrind_mysqltest= 0;
 my @valgrind_args;
 my $opt_strace= 0;
-my $opt_strace_client;
+my $opt_stracer;
+my $opt_client_strace = 0;
 my @strace_args;
 my $opt_valgrind_path;
 my $valgrind_reports= 0;
@@ -364,6 +367,32 @@ my $opt_stop_keep_alive= $ENV{MTR_STOP_KEEP_ALIVE};
 
 select(STDOUT);
 $| = 1; # Automatically flush STDOUT
+
+my $set_titlebar;
+
+
+ BEGIN {
+   if (IS_WINDOWS) {
+     my $have_win32_console= 0;
+     eval {
+       require Win32::Console;
+       Win32::Console->import();
+       $have_win32_console = 1;
+     };
+     eval 'sub HAVE_WIN32_CONSOLE { $have_win32_console }';
+   } else {
+     eval 'sub HAVE_WIN32_CONSOLE { 0 }';
+   }
+}
+
+if (-t STDOUT) {
+  if (IS_WINDOWS and HAVE_WIN32_CONSOLE) {
+    $set_titlebar = sub {Win32::Console::Title $_[0];};
+  } elsif (defined $ENV{TERM} and $ENV{TERM} =~ /xterm/) {
+    $set_titlebar = sub { syswrite STDOUT, "\e];$_[0]\a"; };
+  }
+}
+
 
 main();
 
@@ -440,11 +469,8 @@ sub main {
   if ( $opt_parallel eq "auto" ) {
     # Try to find a suitable value for number of workers
     my $sys_info= My::SysInfo->new();
+    $opt_parallel= $sys_info->num_cpus() + int($sys_info->min_bogomips()/500)-4;
 
-    $opt_parallel= $sys_info->num_cpus();
-    for my $limit (2000, 1500, 1000, 500){
-      $opt_parallel-- if ($sys_info->min_bogomips() < $limit);
-    }
     my $max_par= $ENV{MTR_MAX_PARALLEL} || 8;
     $opt_parallel= $max_par if ($opt_parallel > $max_par);
     $opt_parallel= $num_tests if ($opt_parallel > $num_tests);
@@ -541,6 +567,7 @@ sub main {
     # Create minimalistic "test" for the reporting
     my $tinfo = My::Test->new
       (
+       suite          => { name => 'valgrind', },
        name           => 'valgrind_report',
       );
     # Set dummy worker id to align report with normal tests
@@ -565,7 +592,6 @@ sub main {
   }
 
   print_total_times($opt_parallel) if $opt_report_times;
-
   mtr_report_stats($prefix, $fail, $completed, $extra_warnings);
 
   if ( @$completed != $num_tests)
@@ -671,8 +697,7 @@ sub run_test_server ($$$) {
                   My::CoreDump->show($core_file, $exe_mysqld, $opt_parallel);
 
                   # Limit number of core files saved
-                  if ($opt_max_save_core > 0 &&
-                      $num_saved_cores >= $opt_max_save_core)
+                  if ($num_saved_cores >= $opt_max_save_core)
                   {
                     mtr_report(" - deleting it, already saved",
                                "$opt_max_save_core");
@@ -688,8 +713,7 @@ sub run_test_server ($$$) {
             },
             $worker_savedir);
 
-	    if ($opt_max_save_datadir > 0 &&
-		$num_saved_datadir >= $opt_max_save_datadir)
+	    if ($num_saved_datadir >= $opt_max_save_datadir)
 	    {
 	      mtr_report(" - skipping '$worker_savedir/'");
 	      rmtree($worker_savedir);
@@ -698,9 +722,9 @@ sub run_test_server ($$$) {
             {
 	      mtr_report(" - saving '$worker_savedir/' to '$savedir/'");
 	      rename($worker_savedir, $savedir);
+	      $num_saved_datadir++;
 	    }
 	    resfile_print_test();
-	    $num_saved_datadir++;
 	    $num_failed_test++ unless ($result->{retries} ||
                                        $result->{exp_fail});
 
@@ -744,7 +768,14 @@ sub run_test_server ($$$) {
               if ( $result->is_failed() ) {
                 my $worker_logdir= $result->{savedir};
                 my $log_file_name=dirname($worker_logdir)."/".$result->{shortname}.".log";
-                rename $log_file_name,$log_file_name.".failed";
+
+                if (-e $log_file_name) {
+                  $result->{'logfile-failed'} = mtr_lastlinesfromfile($log_file_name, 20);
+                } else {
+                  $result->{'logfile-failed'} = "";
+                }
+
+                rename $log_file_name, $log_file_name.".failed";
               }
 	      delete($result->{result});
 	      $result->{retries}= $retries+1;
@@ -866,7 +897,7 @@ sub run_test_server ($$$) {
 	  delete $next->{reserved};
 	}
 
-        xterm_stat(scalar(@$tests));
+	titlebar_stat(scalar(@$tests)) if $set_titlebar;
 
 	if ($next) {
 	  # We don't need this any more
@@ -1061,6 +1092,7 @@ sub print_global_resfile {
   resfile_global("warnings", $opt_warnings ? 1 : 0);
   resfile_global("max-connections", $opt_max_connections);
   resfile_global("product", "MySQL");
+  resfile_global("xml-report", $opt_xml_report);
   # Somewhat hacky code to convert numeric version back to dot notation
   my $v1= int($mysql_version_id / 10000);
   my $v2= int(($mysql_version_id % 10000)/100);
@@ -1150,9 +1182,10 @@ sub command_line_setup {
 	     'debugger=s'               => \$opt_debugger,
 	     'boot-dbx'                 => \$opt_boot_dbx,
 	     'client-debugger=s'        => \$opt_client_debugger,
-             'strace'			=> \$opt_strace,
-             'strace-client'            => \$opt_strace_client,
-             'strace-option=s'          => \@strace_args,
+             'strace'              => \$opt_strace,
+             'strace-option=s'     => \@strace_args,
+             'client-strace'       => \$opt_client_strace,
+             'stracer=s'           => \$opt_stracer,
              'max-save-core=i'          => \$opt_max_save_core,
              'max-save-datadir=i'       => \$opt_max_save_datadir,
              'max-test-fail=i'          => \$opt_max_test_fail,
@@ -1226,7 +1259,8 @@ sub command_line_setup {
              'help|h'                   => \$opt_usage,
 	     # list-options is internal, not listed in help
 	     'list-options'             => \$opt_list_options,
-             'skip-test-list=s'         => \@opt_skip_test_list
+             'skip-test-list=s'         => \@opt_skip_test_list,
+             'xml-report=s'             => \$opt_xml_report
            );
 
   # fix options (that take an optional argument and *only* after = sign
@@ -1241,6 +1275,17 @@ sub command_line_setup {
   # --------------------------------------------------------------------------
   if ($opt_verbose != 0){
     report_option('verbose', $opt_verbose);
+  }
+
+  # Negative values aren't meaningful on integer options
+  foreach(grep(/=i$/, keys %options))
+  {
+    if (defined ${$options{$_}} &&
+        do { no warnings "numeric"; int ${$options{$_}} < 0})
+    {
+      my $v= (split /=/)[0];
+      die("$v doesn't accept a negative value:");
+    }
   }
 
   # Find the absolute path to the test directory
@@ -1748,7 +1793,7 @@ sub command_line_setup {
 	       join(" ", @valgrind_args), "\"");
   }
 
-  if (@strace_args)
+  if (@strace_args || $opt_stracer)
   {
     $opt_strace=1;
   }
@@ -3165,7 +3210,8 @@ sub mysql_install_db {
   # ----------------------------------------------------------------------
   # export MYSQLD_BOOTSTRAP_CMD variable containing <path>/mysqld <args>
   # ----------------------------------------------------------------------
-  $ENV{'MYSQLD_BOOTSTRAP_CMD'}= "$exe_mysqld_bootstrap " . join(" ", @$args);
+  $ENV{'MYSQLD_BOOTSTRAP_CMD'}= "$exe_mysqld_bootstrap " . join(" ", @$args)
+    unless defined $ENV{'MYSQLD_BOOTSTRAP_CMD'};
 
   # Extra options can come not only from the command line, but also
   # from option files or combinations. We want them on a command line
@@ -3383,8 +3429,11 @@ sub do_before_run_mysqltest($)
     # to be able to distinguish them from manually created
     # version-controlled results, and to ignore them in git.
     my $dest = "$base_file$suites.result~";
-    my @cmd = ($exe_patch, qw/--binary -r - -f -s -o/,
-               $dest, $base_result, $resfile);
+    my @cmd = ($exe_patch);
+    if ($^O eq "MSWin32") {
+      push @cmd, '--binary';
+    }
+    push @cmd, (qw/-r - -f -s -o/, $dest, $base_result, $resfile);
     if (-w $resdir) {
       # don't rebuild a file if it's up to date
       unless (-e $dest and -M $dest < -M $resfile
@@ -4399,6 +4448,8 @@ sub extract_warning_lines ($$) {
      qr/missing DBUG_RETURN/,
      qr/Attempting backtrace/,
      qr/Assertion .* failed/,
+     qr/Sanitizer/,
+     qr/runtime error:/,
     );
   # These are taken from the include/mtr_warnings.sql global suppression
   # list. They occur delayed, so they can be parsed during shutdown rather
@@ -5290,12 +5341,12 @@ sub server_need_restart {
         exists $server->{'restart_opts'})
     {
       my $use_dynamic_option_switch= 0;
-      delete $server->{'restart_opts'};
+      my $restart_opts = delete $server->{'restart_opts'} || [];
       if (!$use_dynamic_option_switch)
       {
 	mtr_verbose_restart($server, "running with different options '" .
 			    join(" ", @{$extra_opts}) . "' != '" .
-			    join(" ", @{$started_opts}) . "'" );
+			    join(" ", @{$started_opts}, @{$restart_opts}) . "'" );
 	return 1;
       }
 
@@ -5513,14 +5564,6 @@ sub start_mysqltest ($) {
     mtr_add_arg($args, "--non-blocking-api");
   }
 
-  if ( $opt_strace_client )
-  {
-    $exe=  $opt_strace_client || "strace";
-    mtr_add_arg($args, "-o");
-    mtr_add_arg($args, "%s/log/mysqltest.strace", $opt_vardir);
-    mtr_add_arg($args, "$exe_mysqltest");
-  }
-
   mtr_add_arg($args, "--timer-file=%s/log/timer", $opt_vardir);
 
   if ( $opt_compress )
@@ -5591,6 +5634,17 @@ sub start_mysqltest ($) {
     my @args_saved = @$args;
     mtr_init_args(\$args);
     valgrind_arguments($args, \$exe);
+    mtr_add_arg($args, "%s", $_) for @args_saved;
+  }
+
+  # ----------------------------------------------------------------------
+  # Prefix the strace options to the argument list.
+  # ----------------------------------------------------------------------
+  if ( $opt_client_strace )
+  {
+    my @args_saved = @$args;
+    mtr_init_args(\$args);
+    strace_arguments($args, \$exe, "mysqltest");
     mtr_add_arg($args, "%s", $_) for @args_saved;
   }
 
@@ -5918,16 +5972,17 @@ sub strace_arguments {
   my $args= shift;
   my $exe=  shift;
   my $mysqld_name= shift;
+  my $output= sprintf("%s/log/%s.strace", $path_vardir_trace, $mysqld_name);
 
   mtr_add_arg($args, "-f");
-  mtr_add_arg($args, "-o%s/var/log/%s.strace", $glob_mysql_test_dir, $mysqld_name);
+  mtr_add_arg($args, "-o%s", $output);
 
-  # Add strace options, can be overriden by user
+  # Add strace options
   mtr_add_arg($args, '%s', $_) for (@strace_args);
 
   mtr_add_arg($args, $$exe);
 
-  $$exe= "strace";
+  $$exe=  $opt_stracer || "strace";
 
   if ($exe_libtool)
   {
@@ -6033,7 +6088,7 @@ Examples:
 
 alias
 main.alias              'main' is the name of the suite for the 't' directory.
-rpl.rpl_invoked_features,mix,xtradb_plugin
+rpl.rpl_invoked_features,mix,innodb_plugin
 suite/rpl/t/rpl.rpl_invoked_features
 
 Options to control what engine/variation to run:
@@ -6161,7 +6216,7 @@ Options for debugging the product
   debug-server          Use debug version of server, but without turning on
                         tracing
   debugger=NAME         Start mysqld in the selected debugger
-  gdb                   Start the mysqld(s) in gdb
+  gdb[=gdb_arguments]   Start the mysqld(s) in gdb
   manual-debug          Let user manually start mysqld in debugger, before
                         running test(s)
   manual-gdb            Let user manually start mysqld in gdb, before running
@@ -6174,12 +6229,12 @@ Options for debugging the product
                         test(s)
   max-save-core         Limit the number of core files saved (to avoid filling
                         up disks for heavily crashing server). Defaults to
-                        $opt_max_save_core, set to 0 for no limit. Set
-                        it's default with MTR_MAX_SAVE_CORE
+                        $opt_max_save_core. Set its default with
+                        MTR_MAX_SAVE_CORE
   max-save-datadir      Limit the number of datadir saved (to avoid filling
                         up disks for heavily crashing server). Defaults to
-                        $opt_max_save_datadir, set to 0 for no limit. Set
-                        it's default with MTR_MAX_SAVE_DATADIR
+                        $opt_max_save_datadir. Set its default with
+                        MTR_MAX_SAVE_DATADIR
   max-test-fail         Limit the number of test failures before aborting
                         the current test run. Defaults to
                         $opt_max_test_fail, set to 0 for no limit. Set
@@ -6203,11 +6258,11 @@ Options for valgrind
 Options for strace
 
   strace                Run the "mysqld" executables using strace. Default
-                        options are -f -o var/log/'mysqld-name'.strace
-  strace-option=ARGS    Option to give strace, replaces default option(s),
-  strace-client=[path]  Create strace output for mysqltest client, optionally
-                        specifying name and path to the trace program to use.
-                        Example: $0 --strace-client=ktrace
+                        options are -f -o 'vardir'/log/'mysqld-name'.strace.
+  client-strace         Trace the "mysqltest".
+  strace-option=ARGS    Option to give strace, appends to existing options.
+  stracer=<EXE>         Specify name and path to the trace program to use.
+                        Default is "strace". Example: $0 --stracer=ktrace.
 
 Misc options
   user=USER             User for connecting to mysqld(default: $opt_user)
@@ -6276,6 +6331,7 @@ Misc options
                         phases of test execution.
   stress=ARGS           Run stress test, providing options to
                         mysql-stress-test.pl. Options are separated by comma.
+  xml-report=<file>     Output jUnit xml file of the results.
 
 Some options that control enabling a feature for normal test runs,
 can be turned off by prepending 'no' to the option, e.g. --notimer.
@@ -6304,19 +6360,16 @@ sub time_format($) {
 
 our $num_tests;
 
-sub xterm_stat {
-  if (-t STDOUT and defined $ENV{TERM} and $ENV{TERM} =~ /xterm/) {
-    my ($left) = @_;
+sub titlebar_stat {
+  my ($left) = @_;
 
-    # 2.5 -> best by test
-    $num_tests = $left + 2.5 unless $num_tests;
+  # 2.5 -> best by test
+  $num_tests = $left + 2.5 unless $num_tests;
 
-    my $done = $num_tests - $left;
-    my $spent = time - $^T;
+  my $done = $num_tests - $left;
+  my $spent = time - $^T;
 
-    syswrite STDOUT, sprintf
-           "\e];mtr: spent %s on %d tests. %s (%d tests) left\a",
+  &$set_titlebar(sprintf "mtr: spent %s on %d tests. %s (%d tests) left",
            time_format($spent), $done,
-           time_format($spent/$done * $left), $left;
-  }
+           time_format($spent/$done * $left), $left);
 }

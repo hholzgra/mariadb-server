@@ -1,5 +1,5 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates.
-   Copyright (c) 2009, 2018, MariaDB Corporation
+/* Copyright (c) 2000, 2019, Oracle and/or its affiliates.
+   Copyright (c) 2009, 2020, MariaDB Corporation
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -785,7 +785,7 @@ void lex_end_stage1(LEX *lex)
   }
   else
   {
-    delete lex->sphead;
+    sp_head::destroy(lex->sphead);
     lex->sphead= NULL;
   }
 
@@ -1181,17 +1181,27 @@ static inline uint int_token(const char *str,uint length)
 */
 bool consume_comment(Lex_input_stream *lip, int remaining_recursions_permitted)
 {
+  // only one level of nested comments are allowed
+  DBUG_ASSERT(remaining_recursions_permitted == 0 ||
+              remaining_recursions_permitted == 1);
   uchar c;
   while (! lip->eof())
   {
     c= lip->yyGet();
 
-    if (remaining_recursions_permitted > 0)
+    if (remaining_recursions_permitted == 1)
     {
       if ((c == '/') && (lip->yyPeek() == '*'))
       {
+        lip->yyUnput('(');  // Replace nested "/*..." with "(*..."
+        lip->yySkip();      // and skip "("
+
         lip->yySkip(); /* Eat asterisk */
-        consume_comment(lip, remaining_recursions_permitted-1);
+        if (consume_comment(lip, 0))
+          return true;
+
+        lip->yyUnput(')');  // Replace "...*/" with "...*)"
+        lip->yySkip();      // and skip ")"
         continue;
       }
     }
@@ -2781,7 +2791,7 @@ void LEX::cleanup_lex_after_parse_error(THD *thd)
   if (thd->lex->sphead)
   {
     thd->lex->sphead->restore_thd_mem_root(thd);
-    delete thd->lex->sphead;
+    sp_head::destroy(thd->lex->sphead);
     thd->lex->sphead= NULL;
   }
 }
@@ -3792,7 +3802,8 @@ bool st_select_lex::optimize_unflattened_subqueries(bool const_only)
           sl->options|= SELECT_DESCRIBE;
           inner_join->select_options|= SELECT_DESCRIBE;
         }
-        res= inner_join->optimize();
+        if ((res= inner_join->optimize()))
+          return TRUE;
         if (!inner_join->cleaned)
           sl->update_used_tables();
         sl->update_correlated_cache();
@@ -4177,7 +4188,7 @@ void SELECT_LEX::update_used_tables()
   }
 
   Item *item;
-  List_iterator_fast<Item> it(join->fields_list);
+  List_iterator_fast<Item> it(join->all_fields);
   while ((item= it++))
   {
     item->update_used_tables();

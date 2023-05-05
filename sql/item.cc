@@ -145,6 +145,19 @@ bool Item::get_date_with_conversion(MYSQL_TIME *ltime, ulonglong fuzzydate)
 }
 
 
+longlong Item::val_datetime_packed_result()
+{
+  MYSQL_TIME ltime, tmp;
+  if (get_date_result(&ltime, TIME_FUZZY_DATES | TIME_INVALID_DATES))
+    return 0;
+  if (ltime.time_type != MYSQL_TIMESTAMP_TIME)
+    return pack_time(&ltime);
+  if ((null_value= time_to_datetime_with_warn(current_thd, &ltime, &tmp, 0)))
+    return 0;
+  return pack_time(&tmp);
+}
+
+
 /**
   Get date/time/datetime.
   If DATETIME or DATE result is returned, it's converted to TIME.
@@ -1329,7 +1342,7 @@ err:
 bool Item::make_zero_date(MYSQL_TIME *ltime, ulonglong fuzzydate)
 {
   /*
-    if the item was not null and convertion failed, we return a zero date
+    if the item was not null and conversion failed, we return a zero date
     if allowed, otherwise - null.
   */
   bzero((char*) ltime,sizeof(*ltime));
@@ -2175,8 +2188,6 @@ bool Item_func_or_sum::agg_item_set_converter(const DTCollation &coll,
     Item* conv= (*arg)->safe_charset_converter(thd, coll.collation);
     if (conv == *arg)
       continue;
-    if (!conv && ((*arg)->collation.repertoire == MY_REPERTOIRE_ASCII))
-      conv= new (thd->mem_root) Item_func_conv_charset(thd, *arg, coll.collation, 1);
 
     if (!conv)
     {
@@ -2594,12 +2605,13 @@ bool Item_field::get_date(MYSQL_TIME *ltime,ulonglong fuzzydate)
 
 bool Item_field::get_date_result(MYSQL_TIME *ltime, ulonglong fuzzydate)
 {
-  if (result_field->is_null() || result_field->get_date(ltime,fuzzydate))
+  if ((null_value= result_field->is_null()) ||
+      result_field->get_date(ltime, fuzzydate))
   {
     bzero((char*) ltime,sizeof(*ltime));
-    return (null_value= 1);
+    return true;
   }
-  return (null_value= 0);
+  return false;
 }
 
 
@@ -4233,7 +4245,7 @@ static bool mark_as_dependent(THD *thd, SELECT_LEX *last, SELECT_LEX *current,
 
   @note
     We have to mark all items between current_sel (including) and
-    last_select (excluding) as dependend (select before last_select should
+    last_select (excluding) as dependent (select before last_select should
     be marked with actual table mask used by resolved item, all other with
     OUTER_REF_TABLE_BIT) and also write dependence information to Item of
     resolved identifier.
@@ -4606,7 +4618,7 @@ Item_field::fix_outer_field(THD *thd, Field **from_field, Item **reference)
   bool upward_lookup= FALSE;
   TABLE_LIST *table_list;
 
-  /* Calulate the TABLE_LIST for the table */
+  /* Calculate the TABLE_LIST for the table */
   table_list= (cached_table ? cached_table :
                field_found && (*from_field) != view_ref_found ?
                (*from_field)->table->pos_in_table_list : 0);
@@ -5320,7 +5332,7 @@ Item *Item_field::propagate_equal_fields(THD *thd,
       but failed to create a valid DATE literal from the given string literal.
 
       Do not do constant propagation in such cases and unlink
-      "this" from the found Item_equal (as this equality not usefull).
+      "this" from the found Item_equal (as this equality not useful).
     */
     item_equal= NULL;
     return this;
@@ -6920,7 +6932,7 @@ bool Item_ref::fix_fields(THD *thd, Item **reference)
               /*
                 Due to cache, find_field_in_tables() can return field which
                 doesn't belong to provided outer_context. In this case we have
-                to find proper field context in order to fix field correcly.
+                to find proper field context in order to fix field correctly.
               */
               do
               {
@@ -7104,9 +7116,9 @@ Item* Item_ref::transform(THD *thd, Item_transformer transformer, uchar *arg)
   callback functions.
 
   First the function applies the analyzer to the Item_ref object. Then
-  if the analizer succeeeds we first applies the compile method to the
+  if the analyzer succeeds we first apply the compile method to the
   object the Item_ref object is referencing. If this returns a new
-  item the old item is substituted for a new one.  After this the
+  item the old item is substituted for a new one. After this the
   transformer is applied to the Item_ref object itself.
   The compile function is not called if the analyzer returns NULL
   in the parameter arg_p. 
@@ -7313,7 +7325,7 @@ bool Item_ref::get_date(MYSQL_TIME *ltime,ulonglong fuzzydate)
 longlong Item_ref::val_datetime_packed()
 {
   DBUG_ASSERT(fixed);
-  longlong tmp= (*ref)->val_datetime_packed();
+  longlong tmp= (*ref)->val_datetime_packed_result();
   null_value= (*ref)->null_value;
   return tmp;
 }
@@ -7322,7 +7334,7 @@ longlong Item_ref::val_datetime_packed()
 longlong Item_ref::val_time_packed()
 {
   DBUG_ASSERT(fixed);
-  longlong tmp= (*ref)->val_time_packed();
+  longlong tmp= (*ref)->val_time_packed_result();
   null_value= (*ref)->null_value;
   return tmp;
 }
@@ -8132,6 +8144,46 @@ Item *Item_direct_view_ref::replace_equal_field(THD *thd, uchar *arg)
   Item *item= field_item->replace_equal_field(thd, arg);
   field_item->set_item_equal(0);
   return item != field_item ? item : this;
+}
+
+
+double Item_direct_view_ref::val_result()
+{
+  double tmp=(*ref)->val_result();
+  null_value=(*ref)->null_value;
+  return tmp;
+}
+
+
+longlong Item_direct_view_ref::val_int_result()
+{
+  longlong tmp=(*ref)->val_int_result();
+  null_value=(*ref)->null_value;
+  return tmp;
+}
+
+
+String *Item_direct_view_ref::str_result(String* tmp)
+{
+  tmp=(*ref)->str_result(tmp);
+  null_value=(*ref)->null_value;
+  return tmp;
+}
+
+
+my_decimal *Item_direct_view_ref::val_decimal_result(my_decimal *val)
+{
+  my_decimal *tmp= (*ref)->val_decimal_result(val);
+  null_value=(*ref)->null_value;
+  return tmp;
+}
+
+
+bool Item_direct_view_ref::val_bool_result()
+{
+  bool tmp= (*ref)->val_bool_result();
+  null_value=(*ref)->null_value;
+  return tmp;
 }
 
 
@@ -9524,7 +9576,7 @@ bool Item_type_holder::join_types(THD *thd, Item *item)
 }
 
 /**
-  Calculate lenth for merging result for given Item type.
+  Calculate length for merging result for given Item type.
 
   @param item  Item for length detection
 

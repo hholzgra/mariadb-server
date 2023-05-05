@@ -1,5 +1,5 @@
 /* Copyright (c) 2000, 2015, Oracle and/or its affiliates.
-   Copyright (c) 2008, 2018, MariaDB
+   Copyright (c) 2008, 2020, MariaDB
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -2582,6 +2582,67 @@ static MYSQL_SOCKET activate_tcp_port(uint port)
   DBUG_RETURN(ip_sock);
 }
 
+#ifdef _WIN32
+/*
+  Create a security descriptor for pipe.
+  - Use low integrity level, so that it is possible to connect
+  from any process.
+  - Give current user read/write access to pipe.
+  - Give Everyone read/write access to pipe minus FILE_CREATE_PIPE_INSTANCE
+*/
+static void init_pipe_security_descriptor()
+{
+#define SDDL_FMT "S:(ML;; NW;;; LW) D:(A;; 0x%08x;;; WD)(A;; FRFW;;; %s)"
+#define EVERYONE_PIPE_ACCESS_MASK                                             \
+  (FILE_READ_DATA | FILE_READ_EA | FILE_READ_ATTRIBUTES | READ_CONTROL |      \
+   SYNCHRONIZE | FILE_WRITE_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES)
+
+#ifndef SECURITY_MAX_SID_STRING_CHARACTERS
+/* Old SDK does not have this constant */
+#define SECURITY_MAX_SID_STRING_CHARACTERS 187
+#endif
+
+  /*
+    Figure out SID of the user that runs the server, then create SDDL string
+    for pipe permissions, and convert it to the security descriptor.
+  */
+  char sddl_string[sizeof(SDDL_FMT) + 8 + SECURITY_MAX_SID_STRING_CHARACTERS];
+  struct
+  {
+    TOKEN_USER token_user;
+    BYTE buffer[SECURITY_MAX_SID_SIZE];
+  } token_buffer;
+  HANDLE token;
+  DWORD tmp;
+
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+    goto fail;
+
+  if (!GetTokenInformation(token, TokenUser, &token_buffer,
+                           (DWORD) sizeof(token_buffer), &tmp))
+    goto fail;
+
+  CloseHandle(token);
+
+  char *current_user_string_sid;
+  if (!ConvertSidToStringSid(token_buffer.token_user.User.Sid,
+                             &current_user_string_sid))
+    goto fail;
+
+  snprintf(sddl_string, sizeof(sddl_string), SDDL_FMT,
+           EVERYONE_PIPE_ACCESS_MASK, current_user_string_sid);
+  LocalFree(current_user_string_sid);
+
+  if (ConvertStringSecurityDescriptorToSecurityDescriptor(sddl_string,
+      SDDL_REVISION_1, &saPipeSecurity.lpSecurityDescriptor, 0))
+    return;
+
+fail:
+  sql_perror("Can't start server : Initialize security descriptor");
+  unireg_abort(1);
+}
+#endif
+
 static void network_init(void)
 {
 #ifdef HAVE_SYS_UN_H
@@ -2619,19 +2680,7 @@ static void network_init(void)
 
     strxnmov(pipe_name, sizeof(pipe_name)-1, "\\\\.\\pipe\\",
 	     mysqld_unix_port, NullS);
-    /*
-      Create a security descriptor for pipe.
-      - Use low integrity level, so that it is possible to connect
-      from any process.
-      - Give Everyone read/write access to pipe.
-    */
-    if (!ConvertStringSecurityDescriptorToSecurityDescriptor(
-         "S:(ML;; NW;;; LW) D:(A;; FRFW;;; WD)",
-         SDDL_REVISION_1, &saPipeSecurity.lpSecurityDescriptor, NULL))
-    {
-      sql_perror("Can't start server : Initialize security descriptor");
-      unireg_abort(1);
-    }
+    init_pipe_security_descriptor();
     saPipeSecurity.nLength = sizeof(SECURITY_ATTRIBUTES);
     saPipeSecurity.bInheritHandle = FALSE;
     if ((hPipe= CreateNamedPipe(pipe_name,
@@ -3974,7 +4023,8 @@ rpl_make_log_name(const char *opt,
                   const char *ext)
 {
   DBUG_ENTER("rpl_make_log_name");
-  DBUG_PRINT("enter", ("opt: %s, def: %s, ext: %s", opt, def, ext));
+  DBUG_PRINT("enter", ("opt: %s, def: %s, ext: %s", opt ? opt : "(null)",
+                       def, ext));
   char buff[FN_REFLEN];
   const char *base= opt ? opt : def;
   unsigned int options=
@@ -4538,8 +4588,10 @@ static int init_common_variables()
     get corrupted if accesses with names of different case.
   */
   DBUG_PRINT("info", ("lower_case_table_names: %d", lower_case_table_names));
+  if(mysql_real_data_home_ptr == NULL || *mysql_real_data_home_ptr == 0)
+    mysql_real_data_home_ptr= mysql_real_data_home;
   SYSVAR_AUTOSIZE(lower_case_file_system,
-                  test_if_case_insensitive(mysql_real_data_home));
+                  test_if_case_insensitive(mysql_real_data_home_ptr));
   if (!lower_case_table_names && lower_case_file_system == 1)
   {
     if (lower_case_table_names_used)
@@ -4556,7 +4608,7 @@ static int init_common_variables()
     {
       if (global_system_variables.log_warnings)
 	sql_print_warning("Setting lower_case_table_names=2 because file "
-                  "system for %s is case insensitive", mysql_real_data_home);
+                  "system for %s is case insensitive", mysql_real_data_home_ptr);
       SYSVAR_AUTOSIZE(lower_case_table_names, 2);
     }
   }
@@ -4567,7 +4619,7 @@ static int init_common_variables()
       sql_print_warning("lower_case_table_names was set to 2, even though your "
                         "the file system '%s' is case sensitive.  Now setting "
                         "lower_case_table_names to 0 to avoid future problems.",
-			mysql_real_data_home);
+			mysql_real_data_home_ptr);
     SYSVAR_AUTOSIZE(lower_case_table_names, 0);
   }
   else
@@ -5772,8 +5824,10 @@ int mysqld_main(int argc, char **argv)
       set_user(mysqld_user, user_info);
   }
 
+#ifdef WITH_WSREP
   if (WSREP_ON && wsrep_check_opts())
     global_system_variables.wsrep_on= 0;
+#endif
 
   if (opt_bin_log && !global_system_variables.server_id)
   {
@@ -8415,9 +8469,9 @@ SHOW_VAR status_vars[]= {
   {"Key",                      (char*) &show_default_keycache, SHOW_FUNC},
   {"Last_query_cost",          (char*) offsetof(STATUS_VAR, last_query_cost), SHOW_DOUBLE_STATUS},
   {"Max_statement_time_exceeded", (char*) offsetof(STATUS_VAR, max_statement_time_exceeded), SHOW_LONG_STATUS},
-  {"Master_gtid_wait_count",   (char*) offsetof(STATUS_VAR, master_gtid_wait_count), SHOW_LONGLONG_STATUS},
-  {"Master_gtid_wait_timeouts", (char*) offsetof(STATUS_VAR, master_gtid_wait_timeouts), SHOW_LONGLONG_STATUS},
-  {"Master_gtid_wait_time",    (char*) offsetof(STATUS_VAR, master_gtid_wait_time), SHOW_LONGLONG_STATUS},
+  {"Master_gtid_wait_count",   (char*) offsetof(STATUS_VAR, master_gtid_wait_count), SHOW_LONG_STATUS},
+  {"Master_gtid_wait_timeouts", (char*) offsetof(STATUS_VAR, master_gtid_wait_timeouts), SHOW_LONG_STATUS},
+  {"Master_gtid_wait_time",    (char*) offsetof(STATUS_VAR, master_gtid_wait_time), SHOW_LONG_STATUS},
   {"Max_used_connections",     (char*) &max_used_connections,  SHOW_LONG},
   {"Memory_used",              (char*) &show_memory_used, SHOW_SIMPLE_FUNC},
   {"Not_flushed_delayed_rows", (char*) &delayed_rows_in_use,    SHOW_LONG_NOFLUSH},
@@ -8651,8 +8705,8 @@ static void usage(void)
          "\nbecause execution stopped before plugins were initialized.");
   }
 
-  puts("\nTo see what values a running MySQL server is using, type"
-       "\n'mysqladmin variables' instead of 'mysqld --verbose --help'.");
+    puts("\nTo see what variables a running MySQL server is using, type"
+         "\n'mysqladmin variables' instead of 'mysqld --verbose --help'.");
   }
   DBUG_VOID_RETURN;
 }
